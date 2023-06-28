@@ -70,6 +70,16 @@ class CMakeBuild(build_ext):
             '-DPYTHON_EXECUTABLE=' + sys.executable
         ]
 
+        if "HDF5_ROOT" in os.environ:
+            cmake_args.append('-DHDF5_ROOT='+os.environ["HDF5_ROOT"])
+
+        if "CC" in os.environ:
+            cmake_args.append('-DCMAKE_C_COMPILER='+os.environ["CC"])
+
+        if "CXX" in os.environ:
+            cmake_args.append('-DCMAKE_CXX_COMPILER='+os.environ["CXX"])
+
+            
         build_args = ["--config", build_type,
                       "--target", self.target,
                       "--",

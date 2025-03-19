@@ -305,11 +305,14 @@ py::class_<Storage> bindStorageClass(py::module& m, const char* clsName, const c
     };
     return py::class_<Storage>(
                m, clsName, imbuePopulationClassName(DOC(bbp, sonata, PopulationStorage)).c_str())
-        .def(py::init([](py::object h5_filepath, py::object csv_filepath) {
-                 return Storage(py::str(h5_filepath), py::str(csv_filepath));
+        .def(py::init([](py::object h5_filepath, py::object csv_filepath, Hdf5Reader hdf5_reader) {
+                 return Storage(py::str(h5_filepath),
+                                py::str(csv_filepath),
+                                std::move(hdf5_reader));
              }),
              "h5_filepath"_a,
-             "csv_filepath"_a = "")
+             "csv_filepath"_a = "",
+             "hdf5_reader"_a = Hdf5Reader())
         .def_property_readonly("population_names",
                                &Storage::populationNames,
                                imbuePopulationClassName(DOC_POP_STOR(populationNames)).c_str())
@@ -403,6 +406,8 @@ void bindReportReader(py::module& m, const std::string& prefix) {
 
 
 PYBIND11_MODULE(_libsonata, m) {
+    py::class_<Hdf5Reader>(m, "Hdf5Reader").def(py::init([]() { return Hdf5Reader(); }));
+
     py::class_<Selection>(m,
                           "Selection",
                           "ID sequence in the form convenient for querying attributes")
@@ -429,7 +434,7 @@ PYBIND11_MODULE(_libsonata, m) {
                          if (raw(i, 0) < 0 || raw(i, 1) < 0) {
                              throw SonataError("Negative value passed to Selection");
                          }
-                         ranges.emplace_back(raw(i, 0), raw(i, 1));
+                         ranges.push_back({uint64_t(raw(i, 0)), uint64_t(raw(i, 1))});
                      }
                      return Selection(ranges);
                  }
@@ -445,7 +450,19 @@ PYBIND11_MODULE(_libsonata, m) {
              }),
              "values"_a,
              "Selection from list of IDs: passing np.array with dtype np.uint64 is faster")
-        .def_property_readonly("ranges", &Selection::ranges, DOC_SEL(ranges))
+        .def_property_readonly(
+            "ranges",
+            [](const Selection& obj) {
+                const auto& ranges = obj.ranges();
+                auto list = py::list(ranges.size());
+                for (size_t i = 0; i < ranges.size(); ++i) {
+                    const auto& range = ranges[i];
+                    list[i] = py::make_tuple(std::get<0>(range), std::get<1>(range));
+                }
+
+                return list;
+            },
+            DOC_SEL(ranges))
         .def(
             "flatten", [](Selection& obj) { return asArray(obj.flatten()); }, DOC_SEL(flatten))
         .def_property_readonly("flat_size", &Selection::flatSize, DOC_SEL(flatSize))
@@ -510,11 +527,12 @@ PYBIND11_MODULE(_libsonata, m) {
 
     bindStorageClass<NodeStorage>(m, "NodeStorage", "NodePopulation");
 
-    py::class_<NodeSets>(m, "NodeSets", "")
+    py::class_<NodeSets>(m, "NodeSets", "NodeSets")
         .def(py::init<const std::string&>())
         .def_static("from_file", [](py::object path) { return NodeSets::fromFile(py::str(path)); })
         .def_property_readonly("names", &NodeSets::names, DOC_NODESETS(names))
         .def("materialize", &NodeSets::materialize, DOC_NODESETS(materialize))
+        .def("update", &NodeSets::update, "other"_a, DOC_NODESETS(update))
         .def("toJSON", &NodeSets::toJSON, DOC_NODESETS(toJSON));
 
     py::class_<CommonPopulationProperties>(m,
@@ -552,10 +570,7 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_NODE_POPULATION_PROPERTIES(vasculatureMesh))
         .def_readonly("microdomains_file",
                       &NodePopulationProperties::microdomainsFile,
-                      DOC_NODE_POPULATION_PROPERTIES(microdomainsFile))
-        .def_readonly("spine_morphologies_dir",
-                      &NodePopulationProperties::spineMorphologiesDir,
-                      DOC_NODE_POPULATION_PROPERTIES(spineMorphologiesDir));
+                      DOC_NODE_POPULATION_PROPERTIES(microdomainsFile));
 
     py::class_<EdgePopulationProperties, CommonPopulationProperties>(
         m, "EdgePopulationProperties", "Stores edge population-specific network information")
@@ -564,28 +579,42 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_EDGE_POPULATION_PROPERTIES(spatialSynapseIndexDir))
         .def_readonly("endfeet_meshes_file",
                       &EdgePopulationProperties::endfeetMeshesFile,
-                      DOC_EDGE_POPULATION_PROPERTIES(endfeetMeshesFile));
+                      DOC_EDGE_POPULATION_PROPERTIES(endfeetMeshesFile))
+        .def_readonly("spine_morphologies_dir",
+                      &EdgePopulationProperties::spineMorphologiesDir,
+                      DOC_EDGE_POPULATION_PROPERTIES(spineMorphologiesDir));
 
     py::enum_<CircuitConfig::ConfigStatus>(m, "CircuitConfigStatus")
         .value("invalid", CircuitConfig::ConfigStatus::invalid)
         .value("complete", CircuitConfig::ConfigStatus::complete)
         .value("partial", CircuitConfig::ConfigStatus::partial);
 
-    py::class_<CircuitConfig>(m, "CircuitConfig", "")
+    py::class_<CircuitConfig>(m, "CircuitConfig", "Circuit Configuration")
         .def(py::init<const std::string&, const std::string&>())
         .def_static("from_file",
                     [](py::object path) { return CircuitConfig::fromFile(py::str(path)); })
-        .def_property_readonly("config_status", &CircuitConfig::getCircuitConfigStatus)
+        .def_property_readonly("config_status", &CircuitConfig::getCircuitConfigStatus, "ibid")
         .def_property_readonly("node_sets_path", &CircuitConfig::getNodeSetsPath)
         .def_property_readonly("node_populations", &CircuitConfig::listNodePopulations)
-        .def("node_population", &CircuitConfig::getNodePopulation)
+        .def("node_population",
+             [](const CircuitConfig& config, const std::string& name) {
+                 return config.getNodePopulation(name);
+             })
         .def_property_readonly("edge_populations", &CircuitConfig::listEdgePopulations)
-        .def("edge_population", &CircuitConfig::getEdgePopulation)
+        .def("edge_population",
+             [](const CircuitConfig& config, const std::string& name) {
+                 return config.getEdgePopulation(name);
+             })
+        .def("edge_population",
+             [](const CircuitConfig& config, const std::string& name, Hdf5Reader hdf5_reader) {
+                 return config.getEdgePopulation(name, hdf5_reader);
+             })
         .def("node_population_properties", &CircuitConfig::getNodePopulationProperties, "name"_a)
         .def("edge_population_properties", &CircuitConfig::getEdgePopulationProperties, "name"_a)
         .def_property_readonly("expanded_json", &CircuitConfig::getExpandedJSON);
 
-    py::class_<SimulationConfig::Run> run(m,
+    py::class_<SimulationConfig> simConf(m, "SimulationConfig", "Simulation Configuration");
+    py::class_<SimulationConfig::Run> run(simConf,
                                           "Run",
                                           "Stores parameters defining global simulation settings");
     run.def_readonly("tstop", &SimulationConfig::Run::tstop, DOC_SIMULATIONCONFIG(Run, tstop))
@@ -610,14 +639,19 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_SIMULATIONCONFIG(Run, minisSeed))
         .def_readonly("synapse_seed",
                       &SimulationConfig::Run::synapseSeed,
-                      DOC_SIMULATIONCONFIG(Run, synapseSeed));
+                      DOC_SIMULATIONCONFIG(Run, synapseSeed))
+        .def_readonly("electrodes_file",
+                      &SimulationConfig::Run::electrodesFile,
+                      DOC_SIMULATIONCONFIG(Run, electrodesFile));
 
     py::enum_<SimulationConfig::Run::IntegrationMethod>(run, "IntegrationMethod")
         .value("euler", SimulationConfig::Run::IntegrationMethod::euler)
-        .value("nicholson", SimulationConfig::Run::IntegrationMethod::nicholson)
-        .value("nicholson_ion", SimulationConfig::Run::IntegrationMethod::nicholson_ion);
+        .value("crank_nicolson", SimulationConfig::Run::IntegrationMethod::crank_nicolson)
+        .value("crank_nicolson_ion", SimulationConfig::Run::IntegrationMethod::crank_nicolson_ion);
 
-    py::class_<SimulationConfig::Output> output(m, "Output", "Parameters of simulation output");
+    py::class_<SimulationConfig::Output> output(simConf,
+                                                "Output",
+                                                "Parameters of simulation output");
     output
         .def_readonly("output_dir",
                       &SimulationConfig::Output::outputDir,
@@ -641,7 +675,7 @@ PYBIND11_MODULE(_libsonata, m) {
         .value("by_time", SimulationConfig::Output::SpikesSortOrder::by_time);
 
     py::class_<SimulationConfig::Conditions> conditions(
-        m, "Conditions", "Parameters defining global experimental conditions");
+        simConf, "Conditions", "Parameters defining global experimental conditions");
     conditions
         .def_readonly("celsius",
                       &SimulationConfig::Conditions::celsius,
@@ -661,21 +695,20 @@ PYBIND11_MODULE(_libsonata, m) {
         .def_readonly("mechanisms",
                       &SimulationConfig::Conditions::mechanisms,
                       DOC_SIMULATIONCONFIG(Conditions, mechanisms))
-        .def_property_readonly("list_modification_names",
-                               &SimulationConfig::Conditions::listModificationNames,
-                               DOC_SIMULATIONCONFIG(Conditions, listModificationNames))
-        .def("modification",
-             &SimulationConfig::Conditions::getModification,
-             "name"_a,
-             DOC_SIMULATIONCONFIG(Conditions, getModification));
+        .def("modifications",
+             &SimulationConfig::Conditions::getModifications,
+             DOC_SIMULATIONCONFIG(Conditions, getModifications));
 
 
     py::enum_<SimulationConfig::Conditions::SpikeLocation>(conditions, "SpikeLocation")
         .value("soma", SimulationConfig::Conditions::SpikeLocation::soma)
         .value("AIS", SimulationConfig::Conditions::SpikeLocation::AIS);
 
-    py::class_<SimulationConfig::ModificationBase> modificationBase(m, "ModificationBase");
+    py::class_<SimulationConfig::ModificationBase> modificationBase(simConf, "ModificationBase");
     modificationBase
+        .def_readonly("name",
+                      &SimulationConfig::ModificationBase::name,
+                      DOC_SIMULATIONCONFIG(ModificationBase, name))
         .def_readonly("node_set",
                       &SimulationConfig::ModificationBase::nodeSet,
                       DOC_SIMULATIONCONFIG(ModificationBase, nodeSet))
@@ -684,10 +717,10 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_SIMULATIONCONFIG(ModificationBase, type));
 
     py::class_<SimulationConfig::ModificationTTX, SimulationConfig::ModificationBase>(
-        m, "ModificationTTX");
+        simConf, "ModificationTTX");
 
     py::class_<SimulationConfig::ModificationConfigureAllSections,
-               SimulationConfig::ModificationBase>(m, "ModificationConfigureAllSections")
+               SimulationConfig::ModificationBase>(simConf, "ModificationConfigureAllSections")
         .def_readonly("section_configure",
                       &SimulationConfig::ModificationConfigureAllSections::sectionConfigure,
                       DOC_SIMULATIONCONFIG(ModificationConfigureAllSections, sectionConfigure));
@@ -701,7 +734,7 @@ PYBIND11_MODULE(_libsonata, m) {
                SimulationConfig::ModificationBase::ModificationType::ConfigureAllSections,
                DOC_SIMULATIONCONFIG(ModificationBase, ModificationType, ConfigureAllSections));
 
-    py::class_<SimulationConfig::Report> report(m, "Report", "Parameters of a report");
+    py::class_<SimulationConfig::Report> report(simConf, "Report", "Parameters of a report");
     report
         .def_readonly("cells",
                       &SimulationConfig::Report::cells,
@@ -753,6 +786,7 @@ PYBIND11_MODULE(_libsonata, m) {
 
     py::enum_<SimulationConfig::Report::Type>(report, "Type")
         .value("compartment", SimulationConfig::Report::Type::compartment)
+        .value("lfp", SimulationConfig::Report::Type::lfp)
         .value("summation", SimulationConfig::Report::Type::summation)
         .value("synapse", SimulationConfig::Report::Type::synapse);
 
@@ -764,7 +798,7 @@ PYBIND11_MODULE(_libsonata, m) {
         .value("center", SimulationConfig::Report::Compartments::center)
         .value("all", SimulationConfig::Report::Compartments::all);
 
-    py::class_<SimulationConfig::InputBase> inputBase(m, "InputBase");
+    py::class_<SimulationConfig::InputBase> inputBase(simConf, "InputBase");
     inputBase
         .def_readonly("module",
                       &SimulationConfig::InputBase::module,
@@ -782,55 +816,80 @@ PYBIND11_MODULE(_libsonata, m) {
                       &SimulationConfig::InputBase::nodeSet,
                       DOC_SIMULATIONCONFIG(InputBase, nodeSet));
 
-    py::class_<SimulationConfig::InputLinear, SimulationConfig::InputBase>(m, "Linear")
+    py::class_<SimulationConfig::InputLinear, SimulationConfig::InputBase>(simConf, "Linear")
         .def_readonly("amp_start",
                       &SimulationConfig::InputLinear::ampStart,
                       DOC_SIMULATIONCONFIG(InputLinear, ampStart))
         .def_readonly("amp_end",
                       &SimulationConfig::InputLinear::ampEnd,
-                      DOC_SIMULATIONCONFIG(InputLinear, ampEnd));
+                      DOC_SIMULATIONCONFIG(InputLinear, ampEnd))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputLinear::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputLinear, representsPhysicalElectrode));
 
-    py::class_<SimulationConfig::InputRelativeLinear, SimulationConfig::InputBase>(m,
+    py::class_<SimulationConfig::InputRelativeLinear, SimulationConfig::InputBase>(simConf,
                                                                                    "RelativeLinear")
         .def_readonly("percent_start",
                       &SimulationConfig::InputRelativeLinear::percentStart,
                       DOC_SIMULATIONCONFIG(InputRelativeLinear, percentStart))
         .def_readonly("percent_end",
                       &SimulationConfig::InputRelativeLinear::percentEnd,
-                      DOC_SIMULATIONCONFIG(InputRelativeLinear, percentEnd));
+                      DOC_SIMULATIONCONFIG(InputRelativeLinear, percentEnd))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputRelativeLinear::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputRelativeLinear, representsPhysicalElectrode));
 
-    py::class_<SimulationConfig::InputPulse, SimulationConfig::InputBase>(m, "Pulse")
+    py::class_<SimulationConfig::InputPulse, SimulationConfig::InputBase>(simConf, "Pulse")
         .def_readonly("amp_start",
                       &SimulationConfig::InputPulse::ampStart,
                       DOC_SIMULATIONCONFIG(InputPulse, ampStart))
-        .def_readonly("amp_end",
-                      &SimulationConfig::InputPulse::ampEnd,
-                      DOC_SIMULATIONCONFIG(InputPulse, ampEnd))
         .def_readonly("width",
                       &SimulationConfig::InputPulse::width,
                       DOC_SIMULATIONCONFIG(InputPulse, width))
         .def_readonly("frequency",
                       &SimulationConfig::InputPulse::frequency,
-                      DOC_SIMULATIONCONFIG(InputPulse, frequency));
+                      DOC_SIMULATIONCONFIG(InputPulse, frequency))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputPulse::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputPulse, representsPhysicalElectrode));
 
-    py::class_<SimulationConfig::InputSubthreshold, SimulationConfig::InputBase>(m, "Subthreshold")
+    py::class_<SimulationConfig::InputSinusoidal, SimulationConfig::InputBase>(simConf,
+                                                                               "Sinusoidal")
+        .def_readonly("amp_start",
+                      &SimulationConfig::InputSinusoidal::ampStart,
+                      DOC_SIMULATIONCONFIG(InputSinusoidal, ampStart))
+        .def_readonly("frequency",
+                      &SimulationConfig::InputSinusoidal::frequency,
+                      DOC_SIMULATIONCONFIG(InputSinusoidal, frequency))
+        .def_readonly("dt",
+                      &SimulationConfig::InputSinusoidal::dt,
+                      DOC_SIMULATIONCONFIG(InputSinusoidal, dt))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputSinusoidal::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputSinusoidal, representsPhysicalElectrode));
+
+    py::class_<SimulationConfig::InputSubthreshold, SimulationConfig::InputBase>(simConf,
+                                                                                 "Subthreshold")
         .def_readonly("percent_less",
                       &SimulationConfig::InputSubthreshold::percentLess,
-                      DOC_SIMULATIONCONFIG(InputSubthreshold, percentLess));
+                      DOC_SIMULATIONCONFIG(InputSubthreshold, percentLess))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputSubthreshold::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputSubthreshold, representsPhysicalElectrode));
 
     py::class_<SimulationConfig::InputHyperpolarizing, SimulationConfig::InputBase>(
-        m, "Hyperpolarizing");
+        simConf, "Hyperpolarizing")
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputHyperpolarizing::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputHyperpolarizing, representsPhysicalElectrode));
 
-    py::class_<SimulationConfig::InputSynapseReplay, SimulationConfig::InputBase>(m,
+    py::class_<SimulationConfig::InputSynapseReplay, SimulationConfig::InputBase>(simConf,
                                                                                   "SynapseReplay")
         .def_readonly("spike_file",
                       &SimulationConfig::InputSynapseReplay::spikeFile,
-                      DOC_SIMULATIONCONFIG(InputSynapseReplay, spikeFile))
-        .def_readonly("source",
-                      &SimulationConfig::InputSynapseReplay::source,
-                      DOC_SIMULATIONCONFIG(InputSynapseReplay, source));
+                      DOC_SIMULATIONCONFIG(InputSynapseReplay, spikeFile));
 
-    py::class_<SimulationConfig::InputSeclamp, SimulationConfig::InputBase>(m, "Seclamp")
+    py::class_<SimulationConfig::InputSeclamp, SimulationConfig::InputBase>(simConf, "Seclamp")
         .def_readonly("voltage",
                       &SimulationConfig::InputSeclamp::voltage,
                       DOC_SIMULATIONCONFIG(InputSeclamp, voltage))
@@ -838,7 +897,7 @@ PYBIND11_MODULE(_libsonata, m) {
                       &SimulationConfig::InputSeclamp::seriesResistance,
                       DOC_SIMULATIONCONFIG(InputSeclamp, seriesResistance));
 
-    py::class_<SimulationConfig::InputNoise, SimulationConfig::InputBase>(m, "Noise")
+    py::class_<SimulationConfig::InputNoise, SimulationConfig::InputBase>(simConf, "Noise")
         .def_readonly("mean",
                       &SimulationConfig::InputNoise::mean,
                       DOC_SIMULATIONCONFIG(InputNoise, mean))
@@ -847,9 +906,12 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_SIMULATIONCONFIG(InputNoise, meanPercent))
         .def_readonly("variance",
                       &SimulationConfig::InputNoise::variance,
-                      DOC_SIMULATIONCONFIG(InputNoise, variance));
+                      DOC_SIMULATIONCONFIG(InputNoise, variance))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputNoise::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputNoise, representsPhysicalElectrode));
 
-    py::class_<SimulationConfig::InputShotNoise, SimulationConfig::InputBase>(m, "ShotNoise")
+    py::class_<SimulationConfig::InputShotNoise, SimulationConfig::InputBase>(simConf, "ShotNoise")
         .def_readonly("rise_time",
                       &SimulationConfig::InputShotNoise::riseTime,
                       DOC_SIMULATIONCONFIG(InputShotNoise, riseTime))
@@ -859,6 +921,9 @@ PYBIND11_MODULE(_libsonata, m) {
         .def_readonly("random_seed",
                       &SimulationConfig::InputShotNoise::randomSeed,
                       DOC_SIMULATIONCONFIG(InputShotNoise, randomSeed))
+        .def_readonly("reversal",
+                      &SimulationConfig::InputShotNoise::reversal,
+                      DOC_SIMULATIONCONFIG(InputShotNoise, reversal))
         .def_readonly("dt",
                       &SimulationConfig::InputShotNoise::dt,
                       DOC_SIMULATIONCONFIG(InputShotNoise, dt))
@@ -870,10 +935,13 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_SIMULATIONCONFIG(InputShotNoise, ampMean))
         .def_readonly("amp_var",
                       &SimulationConfig::InputShotNoise::ampVar,
-                      DOC_SIMULATIONCONFIG(InputShotNoise, ampVar));
+                      DOC_SIMULATIONCONFIG(InputShotNoise, ampVar))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputShotNoise::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputShotNoise, representsPhysicalElectrode));
 
     py::class_<SimulationConfig::InputRelativeShotNoise, SimulationConfig::InputBase>(
-        m, "RelativeShotNoise")
+        simConf, "RelativeShotNoise")
         .def_readonly("rise_time",
                       &SimulationConfig::InputRelativeShotNoise::riseTime,
                       DOC_SIMULATIONCONFIG(InputRelativeShotNoise, riseTime))
@@ -883,21 +951,27 @@ PYBIND11_MODULE(_libsonata, m) {
         .def_readonly("random_seed",
                       &SimulationConfig::InputRelativeShotNoise::randomSeed,
                       DOC_SIMULATIONCONFIG(InputRelativeShotNoise, randomSeed))
+        .def_readonly("reversal",
+                      &SimulationConfig::InputRelativeShotNoise::reversal,
+                      DOC_SIMULATIONCONFIG(InputRelativeShotNoise, reversal))
         .def_readonly("dt",
                       &SimulationConfig::InputRelativeShotNoise::dt,
                       DOC_SIMULATIONCONFIG(InputRelativeShotNoise, dt))
-        .def_readonly("amp_cv",
-                      &SimulationConfig::InputRelativeShotNoise::ampCv,
-                      DOC_SIMULATIONCONFIG(InputRelativeShotNoise, ampCv))
         .def_readonly("sd_percent",
                       &SimulationConfig::InputRelativeShotNoise::sdPercent,
                       DOC_SIMULATIONCONFIG(InputRelativeShotNoise, sdPercent))
         .def_readonly("mean_percent",
                       &SimulationConfig::InputRelativeShotNoise::meanPercent,
-                      DOC_SIMULATIONCONFIG(InputRelativeShotNoise, meanPercent));
+                      DOC_SIMULATIONCONFIG(InputRelativeShotNoise, meanPercent))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputRelativeShotNoise::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputRelativeShotNoise, representsPhysicalElectrode))
+        .def_readonly("relative_skew",
+                      &SimulationConfig::InputRelativeShotNoise::relativeSkew,
+                      DOC_SIMULATIONCONFIG(InputRelativeShotNoise, relativeSkew));
 
     py::class_<SimulationConfig::InputAbsoluteShotNoise, SimulationConfig::InputBase>(
-        m, "AbsoluteShotNoise")
+        simConf, "AbsoluteShotNoise")
         .def_readonly("rise_time",
                       &SimulationConfig::InputAbsoluteShotNoise::riseTime,
                       DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, riseTime))
@@ -907,21 +981,28 @@ PYBIND11_MODULE(_libsonata, m) {
         .def_readonly("random_seed",
                       &SimulationConfig::InputAbsoluteShotNoise::randomSeed,
                       DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, randomSeed))
+        .def_readonly("reversal",
+                      &SimulationConfig::InputAbsoluteShotNoise::reversal,
+                      DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, reversal))
         .def_readonly("dt",
                       &SimulationConfig::InputAbsoluteShotNoise::dt,
                       DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, dt))
-        .def_readonly("amp_cv",
-                      &SimulationConfig::InputAbsoluteShotNoise::ampCv,
-                      DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, ampCv))
         .def_readonly("mean",
                       &SimulationConfig::InputAbsoluteShotNoise::mean,
                       DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, mean))
         .def_readonly("sigma",
                       &SimulationConfig::InputAbsoluteShotNoise::sigma,
-                      DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, sigma));
+                      DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, sigma))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputAbsoluteShotNoise::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, representsPhysicalElectrode))
+        .def_readonly("relative_skew",
+                      &SimulationConfig::InputAbsoluteShotNoise::relativeSkew,
+                      DOC_SIMULATIONCONFIG(InputAbsoluteShotNoise, relativeSkew));
+    ;
 
     py::class_<SimulationConfig::InputOrnsteinUhlenbeck, SimulationConfig::InputBase>(
-        m, "OrnsteinUhlenbeck")
+        simConf, "OrnsteinUhlenbeck")
         .def_readonly("tau",
                       &SimulationConfig::InputOrnsteinUhlenbeck::tau,
                       DOC_SIMULATIONCONFIG(InputOrnsteinUhlenbeck, tau))
@@ -939,10 +1020,13 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_SIMULATIONCONFIG(InputOrnsteinUhlenbeck, mean))
         .def_readonly("sigma",
                       &SimulationConfig::InputOrnsteinUhlenbeck::sigma,
-                      DOC_SIMULATIONCONFIG(InputOrnsteinUhlenbeck, sigma));
+                      DOC_SIMULATIONCONFIG(InputOrnsteinUhlenbeck, sigma))
+        .def_readonly("represents_physical_electrode",
+                      &SimulationConfig::InputOrnsteinUhlenbeck::representsPhysicalElectrode,
+                      DOC_SIMULATIONCONFIG(InputOrnsteinUhlenbeck, representsPhysicalElectrode));
 
     py::class_<SimulationConfig::InputRelativeOrnsteinUhlenbeck, SimulationConfig::InputBase>(
-        m, "RelativeOrnsteinUhlenbeck")
+        simConf, "RelativeOrnsteinUhlenbeck")
         .def_readonly("tau",
                       &SimulationConfig::InputRelativeOrnsteinUhlenbeck::tau,
                       DOC_SIMULATIONCONFIG(InputRelativeOrnsteinUhlenbeck, tau))
@@ -960,12 +1044,17 @@ PYBIND11_MODULE(_libsonata, m) {
                       DOC_SIMULATIONCONFIG(InputRelativeOrnsteinUhlenbeck, meanPercent))
         .def_readonly("sd_percent",
                       &SimulationConfig::InputRelativeOrnsteinUhlenbeck::sdPercent,
-                      DOC_SIMULATIONCONFIG(InputRelativeOrnsteinUhlenbeck, sdPercent));
+                      DOC_SIMULATIONCONFIG(InputRelativeOrnsteinUhlenbeck, sdPercent))
+        .def_readonly(
+            "represents_physical_electrode",
+            &SimulationConfig::InputRelativeOrnsteinUhlenbeck::representsPhysicalElectrode,
+            DOC_SIMULATIONCONFIG(InputRelativeOrnsteinUhlenbeck, representsPhysicalElectrode));
 
     py::enum_<SimulationConfig::InputBase::Module>(inputBase, "Module")
         .value("linear", SimulationConfig::InputBase::Module::linear)
         .value("relative_linear", SimulationConfig::InputBase::Module::relative_linear)
         .value("pulse", SimulationConfig::InputBase::Module::pulse)
+        .value("sinusoidal", SimulationConfig::InputBase::Module::sinusoidal)
         .value("subthreshold", SimulationConfig::InputBase::Module::subthreshold)
         .value("hyperpolarizing", SimulationConfig::InputBase::Module::hyperpolarizing)
         .value("synapse_replay", SimulationConfig::InputBase::Module::synapse_replay)
@@ -986,7 +1075,7 @@ PYBIND11_MODULE(_libsonata, m) {
         .value("voltage_clamp", SimulationConfig::InputBase::InputType::voltage_clamp)
         .value("conductance", SimulationConfig::InputBase::InputType::conductance);
 
-    py::class_<SimulationConfig::ConnectionOverride>(m,
+    py::class_<SimulationConfig::ConnectionOverride>(simConf,
                                                      "ConnectionOverride",
                                                      "List of parameters of a connection")
         .def_readonly("name",
@@ -1023,7 +1112,6 @@ PYBIND11_MODULE(_libsonata, m) {
                       &SimulationConfig::ConnectionOverride::neuromodulationStrength,
                       DOC_SIMULATIONCONFIG(ConnectionOverride, neuromodulationStrength));
 
-    py::class_<SimulationConfig> simConf(m, "SimulationConfig", "");
     simConf.def(py::init<const std::string&, const std::string&>())
         .def_static(
             "from_file",
@@ -1072,7 +1160,7 @@ PYBIND11_MODULE(_libsonata, m) {
                                &SimulationConfig::getBetaFeatures,
                                DOC_SIMULATIONCONFIG(getBetaFeatures));
 
-    py::enum_<SimulationConfig::SimulatorType>(simConf, "SimulatorType")
+    py::enum_<SimulationConfig::SimulatorType>(simConf, "SimulatorType", "SimulatorType Enum")
         .value("NEURON", SimulationConfig::SimulatorType::NEURON)
         .value("CORENEURON", SimulationConfig::SimulatorType::CORENEURON);
 
@@ -1171,6 +1259,33 @@ PYBIND11_MODULE(_libsonata, m) {
              "node_ids"_a = nonstd::nullopt,
              "tstart"_a = nonstd::nullopt,
              "tstop"_a = nonstd::nullopt)
+        .def(
+            "get_dict",
+            [](const SpikeReader::Population& self,
+               const py::object& node_ids = py::none(),
+               const py::object& tstart = py::none(),
+               const py::object& tstop = py::none()) {
+                const SpikeTimes& spikes =
+                    (node_ids.is_none() && tstart.is_none() && tstop.is_none())
+                        ? self.getRawArrays()
+                        : self.getArrays(node_ids.is_none()
+                                             ? nonstd::nullopt
+                                             : node_ids.cast<nonstd::optional<Selection>>(),
+                                         tstart.is_none() ? nonstd::nullopt
+                                                          : tstart.cast<nonstd::optional<double>>(),
+                                         tstop.is_none() ? nonstd::nullopt
+                                                         : tstop.cast<nonstd::optional<double>>());
+
+                py::dict result;
+                result["node_ids"] = py::array_t<NodeID>(spikes.node_ids.size(),
+                                                         spikes.node_ids.data());
+                result["timestamps"] = py::array_t<double>(spikes.timestamps.size(),
+                                                           spikes.timestamps.data());
+                return result;
+            },
+            "node_ids"_a = nonstd::nullopt,
+            "tstart"_a = nonstd::nullopt,
+            "tstop"_a = nonstd::nullopt)
         .def_property_readonly(
             "sorting",
             [](const SpikeReader::Population& self) {
@@ -1184,7 +1299,10 @@ PYBIND11_MODULE(_libsonata, m) {
             DOC_SPIKEREADER_POP(getSorting))
         .def_property_readonly("times",
                                &SpikeReader::Population::getTimes,
-                               DOC_SPIKEREADER_POP(getTimes));
+                               DOC_SPIKEREADER_POP(getTimes))
+        .def_property_readonly("time_units",
+                               &SpikeReader::Population::getTimeUnits,
+                               DOC_REPORTREADER_POP(getTimeUnits));
     py::class_<SpikeReader>(m, "SpikeReader", DOC(bbp, sonata, SpikeReader))
         .def(py::init([](py::object h5_filepath) { return SpikeReader(py::str(h5_filepath)); }),
              "h5_filepath"_a)

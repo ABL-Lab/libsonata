@@ -1,14 +1,15 @@
 #include <bbp/sonata/report_reader.h>
 #include <fmt/format.h>
 
-#include <algorithm>  // std::copy, std::find, std::lower_bound, std::upper_bound
-#include <iterator>   // std::advance, std::next
+#include <algorithm>      // std::copy, std::find, std::lower_bound, std::upper_bound
+#include <iterator>       // std::advance, std::next
+#include <unordered_set>  // std::unordered_set
 
 constexpr double EPSILON = 1e-6;
 
-H5::EnumType<bbp::sonata::SpikeReader::Population::Sorting> create_enum_sorting() {
+HighFive::EnumType<bbp::sonata::SpikeReader::Population::Sorting> create_enum_sorting() {
     using bbp::sonata::SpikeReader;
-    return H5::EnumType<SpikeReader::Population::Sorting>(
+    return HighFive::EnumType<SpikeReader::Population::Sorting>(
         {{"none", SpikeReader::Population::Sorting::none},
          {"by_id", SpikeReader::Population::Sorting::by_id},
          {"by_time", SpikeReader::Population::Sorting::by_time}});
@@ -27,9 +28,10 @@ using bbp::sonata::Spikes;
 
 void filterNodeIDUnsorted(Spikes& spikes, const Selection& node_ids) {
     const auto values = node_ids.flatten();
+    const auto selected_values = std::unordered_set<Selection::Value>(values.begin(), values.end());
     const auto new_end =
-        std::remove_if(spikes.begin(), spikes.end(), [&values](const Spike& spike) {
-            return std::find(values.cbegin(), values.cend(), spike.first) == values.cend();
+        std::remove_if(spikes.begin(), spikes.end(), [&selected_values](const Spike& spike) {
+            return selected_values.find(spike.first) == selected_values.end();
         });
     spikes.erase(new_end, spikes.end());
 }
@@ -39,13 +41,13 @@ void filterNodeIDSorted(Spikes& spikes, const Selection& node_ids) {
     for (const auto& range : node_ids.ranges()) {
         const auto begin = std::lower_bound(spikes.begin(),
                                             spikes.end(),
-                                            std::make_pair(range.first, 0.),
+                                            std::make_pair(std::get<0>(range), 0.),
                                             [](const Spike& spike1, const Spike& spike2) {
                                                 return spike1.first < spike2.first;
                                             });
         const auto end = std::upper_bound(spikes.begin(),
                                           spikes.end(),
-                                          std::make_pair(range.second - 1, 0.),
+                                          std::make_pair(std::get<1>(range) - 1, 0.),
                                           [](const Spike& spike1, const Spike& spike2) {
                                               return spike1.first < spike2.first;
                                           });
@@ -95,11 +97,11 @@ inline void emplace_ids(CompartmentID& key, NodeID node_id, ElementID element_id
 namespace bbp {
 namespace sonata {
 
-SpikeReader::SpikeReader(const std::string& filename)
-    : filename_(filename) {}
+SpikeReader::SpikeReader(std::string filename)
+    : filename_(std::move(filename)) {}
 
 std::vector<std::string> SpikeReader::getPopulationNames() const {
-    H5::File file(filename_, H5::File::ReadOnly);
+    HighFive::File file(filename_, HighFive::File::ReadOnly);
     return file.getGroup("/spikes").listObjectNames();
 }
 
@@ -113,6 +115,18 @@ auto SpikeReader::openPopulation(const std::string& populationName) const -> con
 
 std::tuple<double, double> SpikeReader::Population::getTimes() const {
     return std::tie(tstart_, tstop_);
+}
+
+Spikes SpikeReader::Population::createSpikes() const {
+    Spikes spikes;
+    std::transform(spike_times_.node_ids.begin(),
+                   spike_times_.node_ids.end(),
+                   spike_times_.timestamps.begin(),
+                   std::back_inserter(spikes),
+                   [](Spike::first_type node_id, Spike::second_type timestamp) {
+                       return std::make_pair(node_id, timestamp);
+                   });
+    return spikes;
 }
 
 Spikes SpikeReader::Population::get(const nonstd::optional<Selection>& node_ids,
@@ -133,7 +147,7 @@ Spikes SpikeReader::Population::get(const nonstd::optional<Selection>& node_ids,
         return Spikes{};
     }
 
-    auto spikes = spikes_;
+    auto spikes = createSpikes();
     filterTimestamp(spikes, start, stop);
 
     if (node_ids) {
@@ -143,34 +157,65 @@ Spikes SpikeReader::Population::get(const nonstd::optional<Selection>& node_ids,
     return spikes;
 }
 
+const SpikeTimes& SpikeReader::Population::getRawArrays() const {
+    return spike_times_;
+}
+
+SpikeTimes SpikeReader::Population::getArrays(const nonstd::optional<Selection>& node_ids,
+                                              const nonstd::optional<double>& tstart,
+                                              const nonstd::optional<double>& tstop) const {
+    SpikeTimes filtered_spikes;
+    const auto& node_ids_selection = node_ids ? node_ids.value().flatten() : std::vector<NodeID>{};
+    // Create arrays directly for required data based on conditions
+    for (size_t i = 0; i < spike_times_.node_ids.size(); ++i) {
+        const auto& node_id = spike_times_.node_ids[i];
+        const auto& timestamp = spike_times_.timestamps[i];
+
+        // Check if node_id is found in node_ids_selection
+        bool node_ids_found = true;
+        if (node_ids) {
+            node_ids_found = std::find(node_ids_selection.begin(),
+                                       node_ids_selection.end(),
+                                       node_id) != node_ids_selection.end();
+        }
+
+        // Check if timestamp is within valid range
+        bool valid_timestamp = (!tstart || timestamp >= tstart.value()) &&
+                               (!tstop || timestamp <= tstop.value());
+
+        // Include data if both conditions are satisfied
+        if (node_ids_found && valid_timestamp) {
+            filtered_spikes.node_ids.emplace_back(node_id);
+            filtered_spikes.timestamps.emplace_back(timestamp);
+        }
+    }
+    return filtered_spikes;
+}
+
 SpikeReader::Population::Sorting SpikeReader::Population::getSorting() const {
     return sorting_;
 }
 
+std::string SpikeReader::Population::getTimeUnits() const {
+    return time_units_;
+}
+
 SpikeReader::Population::Population(const std::string& filename,
                                     const std::string& populationName) {
-    H5::File file(filename, H5::File::ReadOnly);
+    HighFive::File file(filename, HighFive::File::ReadOnly);
     const auto pop_path = std::string("/spikes/") + populationName;
     const auto pop = file.getGroup(pop_path);
+    auto& node_ids = spike_times_.node_ids;
+    auto& timestamps = spike_times_.timestamps;
 
-    std::vector<Spike::first_type> node_ids;
     pop.getDataSet("node_ids").read(node_ids);
-
-    std::vector<Spike::second_type> timestamps;
     pop.getDataSet("timestamps").read(timestamps);
+    pop.getDataSet("timestamps").getAttribute("units").read(time_units_);
 
     if (node_ids.size() != timestamps.size()) {
         throw SonataError(
             "In spikes file, 'node_ids' and 'timestamps' does not have the same size.");
     }
-
-    std::transform(std::make_move_iterator(node_ids.begin()),
-                   std::make_move_iterator(node_ids.end()),
-                   std::make_move_iterator(timestamps.begin()),
-                   std::back_inserter(spikes_),
-                   [](Spike::first_type&& node_id, Spike::second_type&& timestamp) {
-                       return std::make_pair(std::move(node_id), std::move(timestamp));
-                   });
 
     if (pop.hasAttribute("sorting")) {
         pop.getAttribute("sorting").read(sorting_);
@@ -203,7 +248,7 @@ void SpikeReader::Population::filterTimestamp(Spikes& spikes, double tstart, dou
 
 template <typename T>
 ReportReader<T>::ReportReader(const std::string& filename)
-    : file_(filename, H5::File::ReadOnly) {}
+    : file_(filename, HighFive::File::ReadOnly) {}
 
 template <typename T>
 std::vector<std::string> ReportReader<T>::getPopulationNames() const {
@@ -220,7 +265,8 @@ auto ReportReader<T>::openPopulation(const std::string& populationName) const ->
 }
 
 template <typename T>
-ReportReader<T>::Population::Population(const H5::File& file, const std::string& populationName)
+ReportReader<T>::Population::Population(const HighFive::File& file,
+                                        const std::string& populationName)
     : pop_group_(file.getGroup(std::string("/report/") + populationName))
     , is_node_ids_sorted_(false) {
     const auto mapping_group = pop_group_.getGroup("mapping");
@@ -236,7 +282,7 @@ ReportReader<T>::Population::Population(const H5::File& file, const std::string&
     // Expand the pointers into tuples that define the range of each GID
     size_t element_ids_count = 0;
     for (size_t i = 0; i < node_ids_.size(); ++i) {
-        node_ranges_.emplace_back(index_pointers[i], index_pointers[i + 1]);  // Range of GID
+        node_ranges_.push_back({index_pointers[i], index_pointers[i + 1]});   // Range of GID
         node_offsets_.emplace_back(element_ids_count);                        // Offset in output
         node_index_.emplace_back(i);                                          // Index of previous
 
@@ -343,7 +389,7 @@ ReportReader<T>::Population::getNodeIdElementLayout(
                 result.node_offsets.emplace_back(element_ids_count);
                 result.node_index.emplace_back(result.node_index.size());
 
-                element_ids_count += (range.second - range.first);
+                element_ids_count += (std::get<1>(range) - std::get<0>(range));
             }
         }
     } else {
@@ -356,7 +402,8 @@ ReportReader<T>::Population::getNodeIdElementLayout(
         std::sort(result.node_index.begin(),
                   result.node_index.end(),
                   [&](const size_t i, const size_t j) {
-                      return result.node_ranges[i].first < result.node_ranges[j].first;
+                      return std::get<0>(result.node_ranges[i]) <
+                             std::get<0>(result.node_ranges[j]);
                   });
 
         // Generate the {min,max} IO blocks for the requests
@@ -364,15 +411,15 @@ ReportReader<T>::Population::getNodeIdElementLayout(
         for (size_t i = 0; (i + 1) < result.node_index.size(); i++) {
             const auto index = result.node_index[i];
             const auto index_next = result.node_index[i + 1];
-            const auto max = result.node_ranges[index].second;
-            const auto min_next = result.node_ranges[index_next].first;
+            const auto max = std::get<1>(result.node_ranges[index]);
+            const auto min_next = std::get<0>(result.node_ranges[index_next]);
 
             if ((min_next - max) > block_gap_limit) {
-                result.min_max_blocks.emplace_back(std::make_pair(offset, (i + 1)));
+                result.min_max_blocks.push_back({offset, (i + 1)});
                 offset = (i + 1);
             }
         }
-        result.min_max_blocks.emplace_back(std::make_pair(offset, result.node_index.size()));
+        result.min_max_blocks.push_back({offset, result.node_index.size()});
 
         // Fill the GID-ElementID mapping in blocks to reduce the file system overhead
         std::vector<ElementID> element_ids;
@@ -381,22 +428,22 @@ ReportReader<T>::Population::getNodeIdElementLayout(
         result.ids.resize(element_ids_count);
 
         for (const auto& min_max_block : result.min_max_blocks) {
-            const auto first_index = result.node_index[min_max_block.first];
-            const auto last_index = result.node_index[min_max_block.second - 1];
-            const auto min = result.node_ranges[first_index].first;
-            const auto max = result.node_ranges[last_index].second;
+            const auto first_index = result.node_index[std::get<0>(min_max_block)];
+            const auto last_index = result.node_index[std::get<1>(min_max_block) - 1];
+            const auto min = std::get<0>(result.node_ranges[first_index]);
+            const auto max = std::get<1>(result.node_ranges[last_index]);
 
             dataset_elem_ids.select({min}, {max - min}).read(element_ids);
 
             // Copy the values for each of the GIDs assigned into this block
-            for (size_t i = min_max_block.first; i < min_max_block.second; ++i) {
+            for (size_t i = std::get<0>(min_max_block); i < std::get<1>(min_max_block); ++i) {
                 const auto index = result.node_index[i];
                 const auto node_id = concrete_node_ids[index];
-                const auto range = Selection::Range(result.node_ranges[index].first - min,
-                                                    result.node_ranges[index].second - min);
+                const auto range = Selection::Range{std::get<0>(result.node_ranges[index]) - min,
+                                                    std::get<1>(result.node_ranges[index]) - min};
 
                 auto offset = result.node_offsets[index];
-                for (auto i = range.first; i < range.second; i++, offset++) {
+                for (auto i = std::get<0>(range); i < std::get<1>(range); i++, offset++) {
                     emplace_ids(result.ids[offset], node_id, element_ids[i]);
                 }
             }
@@ -408,8 +455,8 @@ ReportReader<T>::Population::getNodeIdElementLayout(
         //            We observed that fooling HDF5 hides the issue, but we should
         //            verify this behaviour once new releases of HDF5 are available.
         const auto min_max_block = result.min_max_blocks.back();
-        const auto index = result.node_index[min_max_block.first];
-        dataset_elem_ids.select({result.node_ranges[index].first}, {1}).read(element_ids);
+        const auto index = result.node_index[std::get<0>(min_max_block)];
+        dataset_elem_ids.select({std::get<0>(result.node_ranges[index])}, {1}).read(element_ids);
     }
 
     return result;
@@ -513,28 +560,28 @@ DataFrame<T> ReportReader<T>::Population::get(
     for (size_t timer_index = index_start; timer_index <= index_stop; timer_index += stride) {
         // Access the data in blocks to reduce the file system overhead
         for (const auto& min_max_block : min_max_blocks) {
-            const auto first_index = node_index[min_max_block.first];
-            const auto last_index = node_index[min_max_block.second - 1];
-            const auto min = node_ranges[first_index].first;
-            const auto max = node_ranges[last_index].second;
+            const auto first_index = node_index[std::get<0>(min_max_block)];
+            const auto last_index = node_index[std::get<1>(min_max_block) - 1];
+            const auto min = std::get<0>(node_ranges[first_index]);
+            const auto max = std::get<1>(node_ranges[last_index]);
 
             dataset.select({timer_index, min}, {1, max - min}).read(buffer);
 
             // Copy the values for each of the GIDs assigned into this block
             const auto buffer_start = buffer.begin();
-            for (size_t i = min_max_block.first; i < min_max_block.second; ++i) {
+            for (size_t i = std::get<0>(min_max_block); i < std::get<1>(min_max_block); ++i) {
                 const auto index = node_index[i];
-                const auto range = Selection::Range(node_ranges[index].first - min,
-                                                    node_ranges[index].second - min);
-                const auto elements_per_gid = (range.second - range.first);
+                const auto range = Selection::Range{std::get<0>(node_ranges[index]) - min,
+                                                    std::get<1>(node_ranges[index]) - min};
+                const auto elements_per_gid = (std::get<1>(range) - std::get<0>(range));
                 const auto offset = node_offsets[index];
 
                 // Soma report
                 if (elements_per_gid == 1) {
-                    data_start[offset] = buffer_start[range.first];
+                    data_start[offset] = buffer_start[std::get<0>(range)];
                 } else {  // Elements report
-                    std::copy(std::next(buffer_start, range.first),
-                              std::next(buffer_start, range.second),
+                    std::copy(std::next(buffer_start, std::get<0>(range)),
+                              std::next(buffer_start, std::get<1>(range)),
                               std::next(data_start, offset));
                 }
             }

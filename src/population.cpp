@@ -17,151 +17,10 @@
 #include <highfive/H5File.hpp>
 
 #include "population.hpp"
+#include "read_bulk.hpp"
 
 namespace bbp {
 namespace sonata {
-
-namespace detail {
-using Range = Selection::Range;
-using Ranges = Selection::Ranges;
-
-void _checkRanges(const Ranges& ranges) {
-    for (const auto& range : ranges) {
-        if (range.first >= range.second) {
-            throw SonataError(fmt::format("Invalid range: {}-{}", range.first, range.second));
-        }
-    }
-}
-
-Ranges _sortAndMerge(const Ranges& ranges) {
-    if (ranges.empty()) {
-        return ranges;
-    }
-    Ranges ret;
-    Ranges sorted(ranges);
-    std::sort(sorted.begin(), sorted.end());
-
-    auto it = sorted.cbegin();
-    ret.push_back(*(it++));
-
-    for (; it != sorted.cend(); ++it) {
-        auto& last = ret[ret.size() - 1].second;
-        if (last < it->first) {
-            ret.push_back(*it);
-        } else {
-            last = std::max(last, it->second);
-        }
-    }
-    return ret;
-}
-
-Selection intersection_(const Ranges& lhs, const Ranges& rhs) {
-    if (lhs.empty() || rhs.empty()) {
-        return Selection({});
-    }
-    Ranges r0 = detail::_sortAndMerge(lhs);
-    Ranges r1 = detail::_sortAndMerge(rhs);
-
-    auto it0 = r0.cbegin();
-    auto it1 = r1.cbegin();
-
-    Ranges ret;
-    while (it0 != r0.cend() && it1 != r1.cend()) {
-        auto start = std::max(it0->first, it1->first);
-        auto end = std::min(it0->second, it1->second);
-        if (start < end) {
-            ret.push_back({start, end});
-        }
-
-        if (it0->second < it1->second) {
-            ++it0;
-        } else {
-            ++it1;
-        }
-    }
-
-    return Selection(std::move(ret));
-}
-
-Selection union_(const Ranges& lhs, const Ranges& rhs) {
-    Ranges ret;
-    std::copy(lhs.begin(), lhs.end(), std::back_inserter(ret));
-    std::copy(rhs.begin(), rhs.end(), std::back_inserter(ret));
-    ret = detail::_sortAndMerge(ret);
-    return Selection(std::move(ret));
-}
-}  // namespace detail
-
-
-Selection::Selection(Selection::Ranges&& ranges)
-    : ranges_(std::move(ranges)) {
-    detail::_checkRanges(ranges_);
-}
-
-
-Selection::Selection(const Selection::Ranges& ranges)
-    : ranges_(ranges) {
-    detail::_checkRanges(ranges_);
-}
-
-
-Selection Selection::fromValues(const Selection::Values& values) {
-    return fromValues(values.begin(), values.end());
-}
-
-
-const Selection::Ranges& Selection::ranges() const {
-    return ranges_;
-}
-
-
-Selection::Values Selection::flatten() const {
-    Selection::Values result;
-    result.reserve(flatSize());
-    for (const auto& range : ranges_) {
-        for (auto v = range.first; v < range.second; ++v) {
-            result.emplace_back(v);
-        }
-    }
-    return result;
-}
-
-
-size_t Selection::flatSize() const {
-    size_t result = 0;
-    for (const auto& range : ranges_) {
-        result += (range.second - range.first);
-    }
-    return result;
-}
-
-
-bool Selection::empty() const {
-    return ranges().empty();
-}
-
-//--------------------------------------------------------------------------------------------------
-
-
-bool operator==(const Selection& lhs, const Selection& rhs) {
-    return lhs.ranges() == rhs.ranges();
-}
-
-
-bool operator!=(const Selection& lhs, const Selection& rhs) {
-    return !(lhs == rhs);
-}
-
-
-Selection operator&(const Selection& lhs, const Selection& rhs) {
-    return detail::intersection_(lhs.ranges(), rhs.ranges());
-}
-
-
-Selection operator|(const Selection& lhs, const Selection& rhs) {
-    return detail::union_(lhs.ranges(), rhs.ranges());
-}
-
 
 namespace {
 
@@ -200,10 +59,11 @@ std::string _getDataType(const HighFive::DataSet& dset, const std::string& name)
 Population::Population(const std::string& h5FilePath,
                        const std::string& csvFilePath,
                        const std::string& name,
-                       const std::string& prefix)
-    : impl_([h5FilePath, csvFilePath, name, prefix] {
+                       const std::string& prefix,
+                       const Hdf5Reader& hdf5_reader)
+    : impl_([h5FilePath, csvFilePath, name, prefix, hdf5_reader] {
         HDF5_LOCK_GUARD
-        return new Population::Impl(h5FilePath, csvFilePath, name, prefix);
+        return new Population::Impl(h5FilePath, csvFilePath, name, prefix, hdf5_reader);
     }()) {}
 
 
@@ -246,14 +106,14 @@ std::vector<std::string> Population::enumerationValues(const std::string& name) 
 
     // Note: can't use select all, because our locks aren't re-entrant
     const auto selection = Selection({{0, dset.getSpace().getDimensions()[0]}});
-    return _readSelection<std::string>(dset, selection);
+    return _readSelection<std::string>(dset, selection, impl_->hdf5_reader);
 }
 
 
 template <typename T>
 std::vector<T> Population::getAttribute(const std::string& name, const Selection& selection) const {
     HDF5_LOCK_GUARD
-    return _readSelection<T>(impl_->getAttributeDataSet(name), selection);
+    return _readSelection<T>(impl_->getAttributeDataSet(name), selection, impl_->hdf5_reader);
 }
 
 
@@ -262,7 +122,9 @@ std::vector<std::string> Population::getAttribute<std::string>(const std::string
                                                                const Selection& selection) const {
     if (impl_->attributeEnumNames.count(name) == 0) {
         HDF5_LOCK_GUARD
-        return _readSelection<std::string>(impl_->getAttributeDataSet(name), selection);
+        return _readSelection<std::string>(impl_->getAttributeDataSet(name),
+                                           selection,
+                                           impl_->hdf5_reader);
     }
 
     const auto indices = getAttribute<size_t>(name, selection);
@@ -303,7 +165,7 @@ std::vector<T> Population::getEnumeration(const std::string& name,
     }
 
     HDF5_LOCK_GUARD
-    return _readSelection<T>(impl_->getAttributeDataSet(name), selection);
+    return _readSelection<T>(impl_->getAttributeDataSet(name), selection, impl_->hdf5_reader);
 }
 
 
@@ -327,7 +189,9 @@ template <typename T>
 std::vector<T> Population::getDynamicsAttribute(const std::string& name,
                                                 const Selection& selection) const {
     HDF5_LOCK_GUARD
-    return _readSelection<T>(impl_->getDynamicsAttributeDataSet(name), selection);
+    return _readSelection<T>(impl_->getDynamicsAttributeDataSet(name),
+                             selection,
+                             impl_->hdf5_reader);
 }
 
 
@@ -354,7 +218,7 @@ Selection Population::filterAttribute(const std::string& name,
     }
 
     const auto& values = getAttribute<std::string>(name, selectAll());
-    return _getMatchingSelection(values, pred);
+    return _getMatchingSelection(values, std::move(pred));
 }
 
 template <typename T>

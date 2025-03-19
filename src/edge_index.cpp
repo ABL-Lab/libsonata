@@ -11,11 +11,13 @@
 
 #include <bbp/sonata/common.h>
 
+#include <array>
 #include <cstdint>
 #include <set>
 #include <unordered_map>
 #include <vector>
 
+#include "read_bulk.hpp"
 
 namespace bbp {
 namespace sonata {
@@ -23,16 +25,16 @@ namespace edge_index {
 
 namespace {
 
-typedef std::vector<std::vector<uint64_t>> RawIndex;
+using RawIndex = std::vector<std::array<uint64_t, 2>>;
 
-const char* SOURCE_NODE_ID_DSET = "source_node_id";
-const char* TARGET_NODE_ID_DSET = "target_node_id";
+const char* const SOURCE_NODE_ID_DSET = "source_node_id";
+const char* const TARGET_NODE_ID_DSET = "target_node_id";
 
-const char* INDEX_GROUP = "indices";
-const char* SOURCE_INDEX_GROUP = "indices/source_to_target";
-const char* TARGET_INDEX_GROUP = "indices/target_to_source";
-const char* NODE_ID_TO_RANGES_DSET = "node_id_to_ranges";
-const char* RANGE_TO_EDGE_ID_DSET = "range_to_edge_id";
+const char* const INDEX_GROUP = "indices";
+const char* const SOURCE_INDEX_GROUP = "indices/source_to_target";
+const char* const TARGET_INDEX_GROUP = "indices/target_to_source";
+const char* const NODE_ID_TO_RANGES_DSET = "node_id_to_ranges";
+const char* const RANGE_TO_EDGE_ID_DSET = "range_to_edge_id";
 
 }  // unnamed namespace
 
@@ -52,58 +54,39 @@ const HighFive::Group targetIndex(const HighFive::Group& h5Root) {
     return h5Root.getGroup(TARGET_INDEX_GROUP);
 }
 
+Selection resolve(const HighFive::Group& indexGroup,
+                  const std::vector<NodeID>& nodeIDs,
+                  const Hdf5Reader& reader) {
+    auto node2ranges_dset = indexGroup.getDataSet(NODE_ID_TO_RANGES_DSET);
+    auto node_dim = node2ranges_dset.getSpace().getDimensions()[0];
+    auto sortedNodeIds = nodeIDs;
+    bulk_read::detail::erase_if(sortedNodeIds, [node_dim](auto id) {
+        // Filter out `nodeIDs[i] >= dims`; because SYN2 used to return an
+        // empty range for an out-of-range `nodeId`s.
+        return id >= node_dim;
+    });
+    std::sort(sortedNodeIds.begin(), sortedNodeIds.end());
 
-Selection resolve(const HighFive::Group& indexGroup, const NodeID nodeID) {
-    if (nodeID >= indexGroup.getDataSet(NODE_ID_TO_RANGES_DSET).getSpace().getDimensions()[0]) {
-        // Returning empty set for out-of-range node IDs, to be aligned with SYN2 reader
-        // implementation
-        // TODO: throw a SonataError instead
-        return Selection({});
-    }
+    auto nodeSelection = Selection::fromValues(sortedNodeIds);
+    auto primaryRange = reader.readSelection<std::array<uint64_t, 2>>(node2ranges_dset,
+                                                                      nodeSelection,
+                                                                      Selection(RawIndex{{0, 2}}));
 
-    RawIndex primaryRange;
-    indexGroup.getDataSet(NODE_ID_TO_RANGES_DSET)
-        .select({static_cast<size_t>(nodeID), 0}, {1, 2})
-        .read(primaryRange);
+    bulk_read::detail::erase_if(primaryRange, [](const auto& range) {
+        // Filter out any invalid ranges `start >= end`.
+        return range[0] >= range[1];
+    });
 
-    const uint64_t primaryRangeBegin = primaryRange[0][0];
-    const uint64_t primaryRangeEnd = primaryRange[0][1];
+    primaryRange = bulk_read::sortAndMerge(primaryRange);
 
-    if (primaryRangeBegin >= primaryRangeEnd) {
-        return Selection({});
-    }
+    auto secondaryRange = reader.readSelection<std::array<uint64_t, 2>>(
+        indexGroup.getDataSet(RANGE_TO_EDGE_ID_DSET), primaryRange, RawIndex{{0, 2}});
 
-    RawIndex secondaryRange;
-    indexGroup.getDataSet(RANGE_TO_EDGE_ID_DSET)
-        .select({static_cast<size_t>(primaryRangeBegin), 0},
-                {static_cast<size_t>(primaryRangeEnd - primaryRangeBegin), 2})
-        .read(secondaryRange);
+    // Sort and eliminate empty ranges.
+    secondaryRange = bulk_read::sortAndMerge(secondaryRange);
 
-    Selection::Ranges ranges;
-    ranges.reserve(secondaryRange.size());
-
-    for (const auto& row : secondaryRange) {
-        ranges.emplace_back(row[0], row[1]);
-    }
-
-    return Selection(std::move(ranges));
+    return Selection(std::move(secondaryRange));
 }
-
-
-Selection resolve(const HighFive::Group& indexGroup, const std::vector<NodeID>& nodeIDs) {
-    if (nodeIDs.size() == 1) {
-        return resolve(indexGroup, nodeIDs[0]);
-    }
-    // TODO optimize: bulk read for primary index
-    // TODO optimize: range merging
-    std::set<EdgeID> merged;
-    for (NodeID nodeID : nodeIDs) {
-        const auto ids = resolve(indexGroup, nodeID).flatten();
-        merged.insert(ids.begin(), ids.end());
-    }
-    return Selection::fromValues(merged.begin(), merged.end());
-}
-
 
 namespace {
 
@@ -130,6 +113,8 @@ std::unordered_map<NodeID, RawIndex> _groupNodeRanges(const std::vector<NodeID>&
 }
 
 
+// Use only in the writing code below. General purpose reading should use the
+// Hdf5Reader interface.
 std::vector<NodeID> _readNodeIDs(const HighFive::Group& h5Root, const std::string& name) {
     std::vector<NodeID> result;
     h5Root.getDataSet(name).read(result);
@@ -153,7 +138,7 @@ void _writeIndexGroup(const std::vector<NodeID>& nodeIDs,
     const auto rangeCount =
         std::accumulate(nodeToRanges.begin(),
                         nodeToRanges.end(),
-                        uint64_t(0),
+                        uint64_t{0},
                         [](uint64_t total, decltype(nodeToRanges)::const_reference item) {
                             return total + item.second.size();
                         });

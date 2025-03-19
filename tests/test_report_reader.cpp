@@ -35,6 +35,7 @@ TEST_CASE("SpikeReader", "[base]") {
     REQUIRE(reader.openPopulation("empty").get() == std::vector<std::pair<uint64_t, double>>{});
 
     REQUIRE(reader.openPopulation("All").getTimes() == std::make_tuple(0.1, 1.3));
+    REQUIRE(reader.openPopulation("All").getTimeUnits() == "ms");
 }
 
 TEST_CASE("SomaReportReader limits", "[base]") {
@@ -47,9 +48,6 @@ TEST_CASE("SomaReportReader limits", "[base]") {
 
     // Inverted id
     REQUIRE_THROWS(pop.get(Selection({{2, 1}})));
-
-    // Negative ids
-    REQUIRE_THROWS(pop.get(Selection({{-1, 1}})));
 
     // Times out of range
     REQUIRE_THROWS(pop.get(Selection({{1, 2}}), 100., 101.));
@@ -119,9 +117,6 @@ TEST_CASE("ElementReportReader limits", "[base]") {
 
     // Inverted id
     REQUIRE_THROWS(pop.get(Selection({{2, 1}})));
-
-    // Negative ids
-    REQUIRE_THROWS(pop.get(Selection({{-1, 1}})));
 
     // Times out of range
     REQUIRE_THROWS(pop.get(Selection({{1, 2}}), 100., 101.));

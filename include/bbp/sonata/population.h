@@ -19,81 +19,11 @@
 #include <utility>  // std::move
 #include <vector>
 
+#include <bbp/sonata/hdf5_reader.h>
+#include <bbp/sonata/selection.h>
 
 namespace bbp {
 namespace sonata {
-
-//--------------------------------------------------------------------------------------------------
-
-class SONATA_API Selection
-{
-  public:
-    using Value = uint64_t;
-    using Values = std::vector<Value>;
-    using Range = std::pair<Value, Value>;
-    using Ranges = std::vector<Range>;
-
-    explicit Selection(Ranges&& ranges);
-    explicit Selection(const Ranges& ranges);
-
-    template <typename Iterator>
-    static Selection fromValues(Iterator first, Iterator last);
-    static Selection fromValues(const Values& values);
-
-    /**
-     * Get a list of ranges constituting Selection
-     */
-    const Ranges& ranges() const;
-
-    /**
-     * Array of IDs constituting Selection
-     */
-    Values flatten() const;
-
-    /**
-     * Total number of elements constituting Selection
-     */
-    size_t flatSize() const;
-
-    bool empty() const;
-
-  private:
-    Ranges ranges_;
-};
-
-bool SONATA_API operator==(const Selection&, const Selection&);
-bool SONATA_API operator!=(const Selection&, const Selection&);
-
-Selection SONATA_API operator&(const Selection&, const Selection&);
-Selection SONATA_API operator|(const Selection&, const Selection&);
-
-template <typename Iterator>
-Selection Selection::fromValues(Iterator first, Iterator last) {
-    Selection::Ranges ranges;
-
-    Selection::Range range{0, 0};
-    while (first != last) {
-        const auto v = *first;
-        if (v == range.second) {
-            ++range.second;
-        } else {
-            if (range.first < range.second) {
-                ranges.push_back(range);
-            }
-            range.first = v;
-            range.second = v + 1;
-        }
-        ++first;
-    }
-
-    if (range.first < range.second) {
-        ranges.push_back(range);
-    }
-
-    return Selection(std::move(ranges));
-}
-
-//--------------------------------------------------------------------------------------------------
 
 class SONATA_API Population
 {
@@ -240,7 +170,8 @@ class SONATA_API Population
     Population(const std::string& h5FilePath,
                const std::string& csvFilePath,
                const std::string& name,
-               const std::string& prefix);
+               const std::string& prefix,
+               const Hdf5Reader& hdf5_reader);
 
     Population(const Population&) = delete;
 
@@ -265,7 +196,12 @@ template <typename Population>
 class SONATA_API PopulationStorage
 {
   public:
-    PopulationStorage(const std::string& h5FilePath, const std::string& csvFilePath = "");
+    PopulationStorage(const std::string& h5FilePath);
+    PopulationStorage(const std::string& h5FilePath, const std::string& csvFilePath);
+    PopulationStorage(const std::string& h5FilePath, const Hdf5Reader& hdf5_reader);
+    PopulationStorage(const std::string& h5FilePath,
+                      const std::string& csvFilePath,
+                      const Hdf5Reader& hdf5_reader);
 
     PopulationStorage(const PopulationStorage&) = delete;
 

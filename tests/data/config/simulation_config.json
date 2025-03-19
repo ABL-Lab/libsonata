@@ -12,7 +12,8 @@
         "v_bool": false
      },
      "manifest": {
-         "$OUTPUT_DIR": "./some/path"
+         "$OUTPUT_DIR": "./some/path",
+         "$ELECTRODES_DIR": "./electrodes/"
      },
      "target_simulator": "CORENEURON",
      "node_set" : "Column",
@@ -24,8 +25,10 @@
          "ionchannel_seed": 222,
          "minis_seed": 333,
          "synapse_seed": 444,
-         "integration_method" : 2,
-         "forward_skip": 500
+         "integration_method" : "crank_nicolson_ion",
+         "forward_skip": 500,
+         "electrodes_file": "$ELECTRODES_DIR/electrode_weights.h5",
+         "spike_threshold": -35.5
     },
     "output": {
          "output_dir": "$OUTPUT_DIR/output",
@@ -45,17 +48,19 @@
           "property4": "test"
         }
       },
-      "modifications": {
-        "applyTTX": {
+      "modifications": [
+        {
             "node_set": "single",
-            "type": "TTX"
+            "type": "TTX",
+            "name": "applyTTX"
         },
-        "no_SK_E2": {
+        {
             "node_set": "single",
             "type": "ConfigureAllSections",
-            "section_configure": "%s.gSK_E2bar_SK_E2 = 0"
+            "section_configure": "%s.gSK_E2bar_SK_E2 = 0",
+            "name": "no_SK_E2"
         }
-      }
+        ]
     },
     "inputs": {
         "ex_linear": {
@@ -85,6 +90,25 @@
             "duration": 80,
             "node_set": "Mosaic"
         },
+        "ex_sinusoidal": {
+            "input_type": "current_clamp",
+            "module": "sinusoidal",
+            "frequency": 8,
+            "amp_start": 0.2,
+            "dt": 0.5,
+            "delay": 10,
+            "duration": 80,
+            "node_set": "Mosaic"
+        },
+        "ex_sinusoidal_default_dt": {
+            "input_type": "current_clamp",
+            "module": "sinusoidal",
+            "frequency": 80,
+            "amp_start": 2,
+            "delay": 10,
+            "duration": 80,
+            "node_set": "Mosaic"
+        },
         "ex_subthreshold": {
             "input_type": "current_clamp",
             "module": "subthreshold",
@@ -99,6 +123,7 @@
             "delay": 0,
             "duration": 1000,
             "decay_time": 4,
+            "reversal": 10,
             "rise_time": 0.4,
             "amp_mean": 70,
             "amp_var": 40,
@@ -147,7 +172,6 @@
             "duration": 1000,
             "decay_time": 4,
             "rise_time": 0.4,
-            "amp_cv": 0.63,
             "mean_percent": 70,
             "sd_percent": 40,
             "node_set": "L5E",
@@ -159,10 +183,12 @@
             "delay": 0,
             "duration": 1000,
             "decay_time": 4,
+            "reversal": 10,
             "rise_time": 0.4,
-            "amp_cv": 0.63,
+            "relative_skew": 0.1,
             "mean": 50,
             "sigma": 5,
+            "represents_physical_electrode": true,
             "node_set": "L5E"
         },
         "ex_replay": {
@@ -170,8 +196,7 @@
             "module": "synapse_replay",
             "delay": 0.0,
             "duration": 40000.0,
-            "spike_file": "replay.dat",
-            "source": "ML_afferents",
+            "spike_file": "replay.h5",
             "node_set": "Column"
         },
         "ex_extracellular_stimulation": {
@@ -179,7 +204,7 @@
             "module": "synapse_replay",
             "delay": 0.0,
             "duration": 40000.0,
-            "spike_file": "replay.dat",
+            "spike_file": "replay.h5",
             "node_set": "Column"
         },
         "ex_OU": {
@@ -248,6 +273,15 @@
               "file_name": "voltage",
               "enabled" : false
          },
+         "lfp": {
+            "cells": "All",
+            "type": "lfp",
+            "variable_name": "v",
+            "unit": "mV",
+            "dt": 0.1,
+            "start_time": 0.0,
+            "end_time": 110000.0
+        },
          "axonal_comp_centers": {
               "cells": "Mosaic",
               "sections": "axon",

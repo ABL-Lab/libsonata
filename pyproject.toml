@@ -5,5 +5,5 @@ requires = [
 ]
 build-backend = "setuptools.build_meta"
 
-[tool.cibuildwheel.linux]
-before-all = "bash ci/ci-buildwheel-prepare-linux.sh"
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

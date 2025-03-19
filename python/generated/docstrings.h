@@ -55,8 +55,8 @@ static const char *__doc_bbp_sonata_CircuitConfig_Components_vasculatureMesh = R
 static const char *__doc_bbp_sonata_CircuitConfig_ConfigStatus = R"doc()doc";
 
 static const char *__doc_bbp_sonata_CircuitConfig_ConfigStatus_complete =
-R"doc(all mandatory properties exist, and the the config should return
-correct values in all possible cases)doc";
+R"doc(all mandatory properties exist, and the config should return correct
+values in all possible cases)doc";
 
 static const char *__doc_bbp_sonata_CircuitConfig_ConfigStatus_invalid = R"doc(needed for parsing json contents that are null / not an enum value)doc";
 
@@ -95,6 +95,8 @@ Throws:
     SonataError if the given population does not exist in any edge
     network.)doc";
 
+static const char *__doc_bbp_sonata_CircuitConfig_getEdgePopulation_2 = R"doc()doc";
+
 static const char *__doc_bbp_sonata_CircuitConfig_getEdgePopulationProperties =
 R"doc(Return a structure containing edge population specific properties,
 falling back to network properties if there are no population-specific
@@ -115,6 +117,8 @@ given population, and the node network it belongs to.
 Throws:
     SonataError if the given population does not exist in any node
     network.)doc";
+
+static const char *__doc_bbp_sonata_CircuitConfig_getNodePopulation_2 = R"doc()doc";
 
 static const char *__doc_bbp_sonata_CircuitConfig_getNodePopulationProperties =
 R"doc(Return a structure containing node population specific properties,
@@ -139,7 +143,7 @@ static const char *__doc_bbp_sonata_CircuitConfig_nodePopulationProperties = R"d
 
 static const char *__doc_bbp_sonata_CircuitConfig_nodeSetsFile = R"doc()doc";
 
-static const char *__doc_bbp_sonata_CircuitConfig_status = R"doc(How strict we are checking the circuit config)doc";
+static const char *__doc_bbp_sonata_CircuitConfig_status = R"doc()doc";
 
 static const char *__doc_bbp_sonata_CommonPopulationProperties = R"doc()doc";
 
@@ -177,7 +181,11 @@ static const char *__doc_bbp_sonata_EdgePopulationProperties_endfeetMeshesFile =
 
 static const char *__doc_bbp_sonata_EdgePopulationProperties_spatialSynapseIndexDir = R"doc(Path to spatial_synapse_index)doc";
 
+static const char *__doc_bbp_sonata_EdgePopulationProperties_spineMorphologiesDir = R"doc(Path to the directory containing the dendritic spine morphologies.)doc";
+
 static const char *__doc_bbp_sonata_EdgePopulation_EdgePopulation = R"doc()doc";
+
+static const char *__doc_bbp_sonata_EdgePopulation_EdgePopulation_2 = R"doc()doc";
 
 static const char *__doc_bbp_sonata_EdgePopulation_afferentEdges = R"doc(Return inbound edges for given node IDs.)doc";
 
@@ -195,6 +203,97 @@ static const char *__doc_bbp_sonata_EdgePopulation_targetNodeIDs = R"doc(Return 
 
 static const char *__doc_bbp_sonata_EdgePopulation_writeIndices = R"doc(Write bidirectional node->edge indices to EdgePopulation HDF5.)doc";
 
+static const char *__doc_bbp_sonata_Hdf5PluginInterface = R"doc()doc";
+
+static const char *__doc_bbp_sonata_Hdf5PluginRead1DInterface = R"doc(Interface for implementing `readSelection<T>(dset, selection)`.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5PluginRead1DInterface_readSelection =
+R"doc(Read the selected subset of the one-dimensional array.
+
+The selection is canonical, i.e. sorted and non-overlapping. The
+dataset is obtained from a `HighFive::File` opened via
+`this->openFile`.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5PluginRead2DInterface = R"doc()doc";
+
+static const char *__doc_bbp_sonata_Hdf5PluginRead2DInterface_readSelection =
+R"doc(Read the Cartesian product of the two selections.
+
+Both selections are canonical, i.e. sorted and non-overlapping. The
+dataset is obtained from a `HighFive::File` opened via
+`this->openFile`.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader =
+R"doc(Abstraction for reading HDF5 datasets.
+
+The Hdf5Reader provides an interface for reading canonical selections
+from datasets. Selections are canonical if they are sorted and don't
+overlap. This allows implementing different optimization strategies,
+such as minimizing bytes read, aggregating nearby reads or using MPI
+collective I/O.
+
+The design uses virtual inheritance, which enables users to inject
+their own reader if needed. This class is the interface used within
+libsonata. It simply delegates to a "plugin", that satisfies the
+interface `Hdf5PluginInterface`.
+
+To enable MPI collective I/O, `libsonata` must call all methods in an
+MPI-collective manner. This implies that the number of times any
+function in `libsonata` calls any of the `Hdf5Reader` methods must not
+depend on the arguments to the function.
+
+Examples:
+
+void wrong(Selection selection) { // Wrong because some MPI ranks
+might return without // calling `readSelection`. if(selection.empty())
+{ return; } hdf5_reader.readSelection(dset, selection); }
+
+void also_wrong(Selection selection) { // Wrong because `hdf5_reader`
+is called `selection.ranges().size()` // number of times. Which could
+be different on each MPI rank. for(auto range : selection.ranges()) {
+hdf5_reader.readSelection(dset, Selection(std::vector{range})); } }
+
+void subtle(Selection selection, bool flag) { // If the flag can
+differ between MPI ranks, this is wrong because // `readSelection` is
+called with different `dset`s. If the `flag` must // be the same on
+all MPI ranks, this is correct. If this happens in // the libsonata
+API, then passing the same `flag` on all MPI ranks becomes // a
+requirement for the users, when using a collective reader. Example: //
+pop.get_attribute(attr_name, selection) if(flag) {
+hdf5_reader.readSelection(dset1, selection); } else {
+hdf5_reader.readSelection(dset2, selection); } }
+
+void correct(Selection selection) { // Correct because no matter which
+branch is taken // `hdf5_reader.readSelection` is called exactly once.
+if(selection.size % 2 == 0) { hdf5_reader.readSelection(dset,
+selection); } else { hdf5_reader.readSelection(dset, {}); } })doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader_Hdf5Reader = R"doc(Create a valid Hdf5Reader with the default plugin.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader_Hdf5Reader_2 = R"doc(Create an Hdf5Reader with a user supplied plugin.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader_impl = R"doc()doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader_openFile =
+R"doc(Open the HDF5.
+
+The dataset passed to `readSelection` must be obtained from a file
+open via this method.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader_readSelection =
+R"doc(Read the selected subset of the one-dimensional array.
+
+Both selections are canonical, i.e. sorted and non-overlapping. The
+dataset is obtained from a `HighFive::File` opened via
+`this->openFile`.)doc";
+
+static const char *__doc_bbp_sonata_Hdf5Reader_readSelection_2 =
+R"doc(Read the Cartesian product of the two selections.
+
+Both selections are canonical, i.e. sorted and non-overlapping. The
+dataset is obtained from a `HighFive::File` opened via
+`this->openFile`.)doc";
+
 static const char *__doc_bbp_sonata_NodePopulation = R"doc()doc";
 
 static const char *__doc_bbp_sonata_NodePopulationProperties = R"doc(Node population-specific network information.)doc";
@@ -205,8 +304,6 @@ populations where it is mandatory.)doc";
 
 static const char *__doc_bbp_sonata_NodePopulationProperties_spatialSegmentIndexDir = R"doc(Path to spatial_segment_index)doc";
 
-static const char *__doc_bbp_sonata_NodePopulationProperties_spineMorphologiesDir = R"doc(Path to the directory containing the dendritic spine morphologies.)doc";
-
 static const char *__doc_bbp_sonata_NodePopulationProperties_vasculatureFile =
 R"doc(Path to the .h5 file containing the vasculature morphology. Only for
 vasculature node populations where it is mandatory.)doc";
@@ -216,6 +313,8 @@ R"doc(Path to the .obj file containing the mesh of a vasculature morphology.
 Only for vasculature node populations where it is mandatory.)doc";
 
 static const char *__doc_bbp_sonata_NodePopulation_NodePopulation = R"doc()doc";
+
+static const char *__doc_bbp_sonata_NodePopulation_NodePopulation_2 = R"doc()doc";
 
 static const char *__doc_bbp_sonata_NodePopulation_matchAttributeValues =
 R"doc(Return selection of where attribute values match value
@@ -274,13 +373,20 @@ Parameter ``name``:
     is the name of the node_set rule to be evaluated
 
 Parameter ``population``:
-    is the population overwhich the returned selection will be valid)doc";
+    is the population for which the returned selection will be valid)doc";
 
 static const char *__doc_bbp_sonata_NodeSets_names = R"doc(Names of the node sets available)doc";
 
 static const char *__doc_bbp_sonata_NodeSets_operator_assign = R"doc()doc";
 
-static const char *__doc_bbp_sonata_NodeSets_toJSON = R"doc(Return string version of node sets)doc";
+static const char *__doc_bbp_sonata_NodeSets_toJSON = R"doc(Return the nodesets as a JSON string.)doc";
+
+static const char *__doc_bbp_sonata_NodeSets_update =
+R"doc(Update `this` to include all nodesets from `this` and `other`.
+
+Duplicate names are overridden with the values from `other`.
+
+The duplicate names are returned.)doc";
 
 static const char *__doc_bbp_sonata_Population = R"doc()doc";
 
@@ -293,6 +399,12 @@ static const char *__doc_bbp_sonata_PopulationStorage_PopulationStorage = R"doc(
 static const char *__doc_bbp_sonata_PopulationStorage_PopulationStorage_2 = R"doc()doc";
 
 static const char *__doc_bbp_sonata_PopulationStorage_PopulationStorage_3 = R"doc()doc";
+
+static const char *__doc_bbp_sonata_PopulationStorage_PopulationStorage_4 = R"doc()doc";
+
+static const char *__doc_bbp_sonata_PopulationStorage_PopulationStorage_5 = R"doc()doc";
+
+static const char *__doc_bbp_sonata_PopulationStorage_PopulationStorage_6 = R"doc()doc";
 
 static const char *__doc_bbp_sonata_PopulationStorage_impl = R"doc()doc";
 
@@ -568,8 +680,6 @@ static const char *__doc_bbp_sonata_Selection = R"doc()doc";
 
 static const char *__doc_bbp_sonata_Selection_Selection = R"doc()doc";
 
-static const char *__doc_bbp_sonata_Selection_Selection_2 = R"doc()doc";
-
 static const char *__doc_bbp_sonata_Selection_empty = R"doc()doc";
 
 static const char *__doc_bbp_sonata_Selection_flatSize = R"doc(Total number of elements constituting Selection)doc";
@@ -603,13 +713,9 @@ R"doc(Extracellular calcium concentration, being applied to the synapse
 uHill parameter in order to scale the U parameter of synapses. Default
 is None.)doc";
 
-static const char *__doc_bbp_sonata_SimulationConfig_Conditions_getModification =
-R"doc(Returns the given modification parameters
-
-Throws:
-    SonataError if the given modification name does not exist)doc";
-
-static const char *__doc_bbp_sonata_SimulationConfig_Conditions_listModificationNames = R"doc(Returns the names of the modifications)doc";
+static const char *__doc_bbp_sonata_SimulationConfig_Conditions_getModifications =
+R"doc(Method to return the full list of modifications in the Conditions
+section.)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Conditions_mechanisms =
 R"doc(Properties to assign values to variables in synapse MOD files. The
@@ -617,8 +723,8 @@ format is a dictionary with keys being the SUFFIX names and values
 being dictionaries of variables' names and values.)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Conditions_modifications =
-R"doc(Collection of dictionaries with each member decribing a modification
-that mimics experimental manipulations to the circuit.)doc";
+R"doc(List of modifications that mimics experimental manipulations to the
+circuit.)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Conditions_randomizeGabaRiseTime =
 R"doc(Enable legacy behavior to randomize the GABA_A rise time in the helper
@@ -672,8 +778,6 @@ static const char *__doc_bbp_sonata_SimulationConfig_ConnectionOverride_weight =
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise = R"doc()doc";
 
-static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_ampCv = R"doc(The coefficient of variation (sd/mean) of gamma-distributed amplitudes)doc";
-
 static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_decayTime = R"doc(The decay time of the bi-exponential shots (ms))doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_dt = R"doc(Timestep of generated signal in ms. Default is 0.25 ms)doc";
@@ -683,6 +787,15 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_mean
 static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_randomSeed =
 R"doc(Override the random seed to introduce correlations between cells,
 default = None)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_relativeSkew =
+R"doc(Signal skewness as a fraction in [0, 1] representing a value between
+the minimum and maximum skewness values compatible with the given
+signal mean and std dev. Default is 0.5.)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_reversal = R"doc(Reversal potential for conductance injection in mV. Default is 0)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputAbsoluteShotNoise_riseTime = R"doc(The rise time of the bi-exponential shots (ms))doc";
 
@@ -730,6 +843,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputBase_Module_seclamp = 
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputBase_Module_shot_noise = R"doc()doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_InputBase_Module_sinusoidal = R"doc()doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_InputBase_Module_subthreshold = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputBase_Module_synapse_replay = R"doc()doc";
@@ -746,11 +861,15 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputBase_nodeSet = R"doc(N
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputHyperpolarizing = R"doc()doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_InputHyperpolarizing_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_InputLinear = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputLinear_ampEnd = R"doc(The final current when a stimulus concludes (nA))doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputLinear_ampStart = R"doc(The amount of current initially injected (nA))doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputLinear_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputNoise = R"doc()doc";
 
@@ -759,6 +878,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputNoise_mean = R"doc(The
 static const char *__doc_bbp_sonata_SimulationConfig_InputNoise_meanPercent =
 R"doc(The mean value of current to inject as a percentage of threshold
 current, default = None)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputNoise_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputNoise_variance =
 R"doc(State var to track whether the value of injected noise current is mean
@@ -774,6 +895,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputOrnsteinUhlenbeck_rand
 R"doc(Override the random seed to introduce correlations between cells,
 default = None)doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_InputOrnsteinUhlenbeck_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_InputOrnsteinUhlenbeck_reversal = R"doc(Reversal potential for conductance injection in mV. Default is 0)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputOrnsteinUhlenbeck_sigma = R"doc(Signal std dev in nA (current_clamp) or uS (conductance))doc";
@@ -782,11 +905,11 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputOrnsteinUhlenbeck_tau 
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputPulse = R"doc()doc";
 
-static const char *__doc_bbp_sonata_SimulationConfig_InputPulse_ampEnd = R"doc(The final current when a stimulus concludes (nA))doc";
-
 static const char *__doc_bbp_sonata_SimulationConfig_InputPulse_ampStart = R"doc(The amount of current initially injected (nA))doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputPulse_frequency = R"doc(The frequency of pulse trains (Hz))doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputPulse_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputPulse_width = R"doc(The length of time each pulse lasts (ms))doc";
 
@@ -795,6 +918,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeLinear = R"doc
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeLinear_percentEnd = R"doc(The percentage of a cell's threshold current to inject at the end)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeLinear_percentStart = R"doc(The percentage of a cell's threshold current to inject)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeLinear_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeOrnsteinUhlenbeck = R"doc()doc";
 
@@ -808,6 +933,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeOrnsteinUhlenb
 R"doc(Override the random seed to introduce correlations between cells,
 default = None)doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeOrnsteinUhlenbeck_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeOrnsteinUhlenbeck_reversal = R"doc(Reversal potential for conductance injection in mV. Default is 0)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeOrnsteinUhlenbeck_sdPercent =
@@ -817,8 +944,6 @@ R"doc(Signal std dev as percentage of a cell’s threshold current
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeOrnsteinUhlenbeck_tau = R"doc(Relaxation time constant in ms)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise = R"doc()doc";
-
-static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_ampCv = R"doc(The coefficient of variation (sd/mean) of gamma-distributed amplitudes)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_decayTime = R"doc(The decay time of the bi-exponential shots (ms))doc";
 
@@ -831,6 +956,15 @@ R"doc(Signal mean as percentage of a cell’s threshold current
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_randomSeed =
 R"doc(Override the random seed to introduce correlations between cells,
 default = None)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_relativeSkew =
+R"doc(Signal skewness as a fraction in [0, 1] representing a value between
+the minimum and maximum skewness values compatible with the given
+signal mean and std dev. Default is 0.5.)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_reversal = R"doc(Reversal potential for conductance injection in mV. Default is 0)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputRelativeShotNoise_riseTime = R"doc(The rise time of the bi-exponential shots (ms))doc";
 
@@ -864,17 +998,33 @@ default = None)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputShotNoise_rate = R"doc(Rate of Poisson events (Hz))doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_InputShotNoise_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputShotNoise_reversal = R"doc(Reversal potential for conductance injection in mV. Default is 0)doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_InputShotNoise_riseTime = R"doc(The rise time of the bi-exponential shots (ms))doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputSinusoidal = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputSinusoidal_ampStart = R"doc(The peak amplitude of the sinusoid. Given in nA.)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputSinusoidal_dt = R"doc(Timestep of generated signal in ms. Default is 0.025 ms)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputSinusoidal_frequency = R"doc(The frequency of the sinusoidal waveform. Given in Hz.)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_InputSinusoidal_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputSubthreshold = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_InputSubthreshold_percentLess = R"doc(A percentage adjusted from 100 of a cell's threshold current)doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_InputSubthreshold_representsPhysicalElectrode = R"doc(Whether this input represents a physical electrode. Default is false)doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_InputSynapseReplay = R"doc()doc";
 
-static const char *__doc_bbp_sonata_SimulationConfig_InputSynapseReplay_source = R"doc(The node set to replay spikes from)doc";
-
-static const char *__doc_bbp_sonata_SimulationConfig_InputSynapseReplay_spikeFile = R"doc(The location of the file with the spike info for injection)doc";
+static const char *__doc_bbp_sonata_SimulationConfig_InputSynapseReplay_spikeFile =
+R"doc(The location of the file with the spike info for injection, file
+extension must be .h5)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_ModificationBase = R"doc()doc";
 
@@ -885,6 +1035,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_ModificationBase_Modificati
 static const char *__doc_bbp_sonata_SimulationConfig_ModificationBase_ModificationType_TTX = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_ModificationBase_ModificationType_invalid = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_ModificationBase_name = R"doc(Name of the modification setting.)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_ModificationBase_nodeSet = R"doc(Node set which receives the manipulation)doc";
 
@@ -962,6 +1114,8 @@ static const char *__doc_bbp_sonata_SimulationConfig_Report_Type_compartment = R
 
 static const char *__doc_bbp_sonata_SimulationConfig_Report_Type_invalid = R"doc()doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_Report_Type_lfp = R"doc()doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_Report_Type_summation = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Report_Type_synapse = R"doc()doc";
@@ -974,7 +1128,9 @@ R"doc(For compartment type, select compartments to report. Default value:
 
 static const char *__doc_bbp_sonata_SimulationConfig_Report_dt = R"doc(Interval between reporting steps in milliseconds)doc";
 
-static const char *__doc_bbp_sonata_SimulationConfig_Report_enabled = R"doc(Allows for supressing a report so that is not created. Default is true)doc";
+static const char *__doc_bbp_sonata_SimulationConfig_Report_enabled =
+R"doc(Allows for suppressing a report so that is not created. Default is
+true)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Report_endTime = R"doc(Time to stop reporting in milliseconds)doc";
 
@@ -1001,19 +1157,21 @@ static const char *__doc_bbp_sonata_SimulationConfig_Run = R"doc(Parameters defi
 
 static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod = R"doc()doc";
 
+static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod_crank_nicolson = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod_crank_nicolson_ion = R"doc()doc";
+
 static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod_euler = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod_invalid = R"doc()doc";
 
-static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod_nicholson = R"doc()doc";
-
-static const char *__doc_bbp_sonata_SimulationConfig_Run_IntegrationMethod_nicholson_ion = R"doc()doc";
-
 static const char *__doc_bbp_sonata_SimulationConfig_Run_dt = R"doc(Integration step duration in milliseconds)doc";
+
+static const char *__doc_bbp_sonata_SimulationConfig_Run_electrodesFile = R"doc(Filename that contains the weights for the LFP calculation.)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Run_integrationMethod =
 R"doc(Selects the NEURON/CoreNEURON integration method. This parameter sets
-the NEURON global variable h.secondorder. Default 0 ('euler'))doc";
+the NEURON global variable h.secondorder, default is "euler".)doc";
 
 static const char *__doc_bbp_sonata_SimulationConfig_Run_ionchannelSeed =
 R"doc(A non-negative integer used for seeding stochastic ion channels,
@@ -1160,19 +1318,31 @@ static const char *__doc_bbp_sonata_SpikeReader_Population_Sorting_by_time = R"d
 
 static const char *__doc_bbp_sonata_SpikeReader_Population_Sorting_none = R"doc()doc";
 
+static const char *__doc_bbp_sonata_SpikeReader_Population_createSpikes = R"doc(Create the spikes from the vectors of node_ids and timestamps)doc";
+
 static const char *__doc_bbp_sonata_SpikeReader_Population_filterNode = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SpikeReader_Population_filterTimestamp = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SpikeReader_Population_get = R"doc(Return spikes with all those node_ids between 'tstart' and 'tstop')doc";
 
+static const char *__doc_bbp_sonata_SpikeReader_Population_getArrays =
+R"doc(Return the node_ids and timestamps vectors with all node_ids between
+'tstart' and 'tstop')doc";
+
+static const char *__doc_bbp_sonata_SpikeReader_Population_getRawArrays = R"doc(Return the raw node_ids and timestamps vectors)doc";
+
 static const char *__doc_bbp_sonata_SpikeReader_Population_getSorting = R"doc(Return the way data are sorted ('none', 'by_id', 'by_time'))doc";
+
+static const char *__doc_bbp_sonata_SpikeReader_Population_getTimeUnits = R"doc(Return the unit of time)doc";
 
 static const char *__doc_bbp_sonata_SpikeReader_Population_getTimes = R"doc(Return (tstart, tstop) of the population)doc";
 
 static const char *__doc_bbp_sonata_SpikeReader_Population_sorting = R"doc()doc";
 
-static const char *__doc_bbp_sonata_SpikeReader_Population_spikes = R"doc()doc";
+static const char *__doc_bbp_sonata_SpikeReader_Population_spike_times = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SpikeReader_Population_time_units = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SpikeReader_Population_tstart = R"doc()doc";
 
@@ -1187,6 +1357,12 @@ static const char *__doc_bbp_sonata_SpikeReader_getPopulationNames = R"doc(Retur
 static const char *__doc_bbp_sonata_SpikeReader_openPopulation = R"doc()doc";
 
 static const char *__doc_bbp_sonata_SpikeReader_populations = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SpikeTimes = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SpikeTimes_node_ids = R"doc()doc";
+
+static const char *__doc_bbp_sonata_SpikeTimes_timestamps = R"doc()doc";
 
 static const char *__doc_bbp_sonata_detail_NodeSets = R"doc()doc";
 

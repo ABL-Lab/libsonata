@@ -309,8 +309,9 @@ TEST_CASE("SimulationConfig") {
         CHECK(config.getRun().tstop == 1000);
         CHECK(config.getRun().dt == 0.025);
         CHECK(config.getRun().randomSeed == 201506);
-        CHECK(config.getRun().spikeThreshold == -30);
-        CHECK(config.getRun().integrationMethod == SimulationConfig::Run::IntegrationMethod::nicholson_ion);
+        CHECK(config.getRun().spikeThreshold == -35.5);
+        CHECK(config.getRun().integrationMethod ==
+              SimulationConfig::Run::IntegrationMethod::crank_nicolson_ion);
         CHECK(config.getRun().stimulusSeed == 111);
         CHECK(config.getRun().ionchannelSeed == 222);
         CHECK(config.getRun().minisSeed == 333);
@@ -319,6 +320,9 @@ TEST_CASE("SimulationConfig") {
         namespace fs = ghc::filesystem;
         const auto basePath = fs::absolute(
             fs::path("./data/config/simulation_config.json").parent_path());
+
+        const auto electrodesPath = fs::absolute(basePath / "electrodes/electrode_weights.h5");
+        CHECK(config.getRun().electrodesFile == (electrodesPath).lexically_normal());
 
         CHECK_NOTHROW(config.getOutput());
         const auto outputPath = fs::absolute(basePath / "some/path/output");
@@ -342,15 +346,14 @@ TEST_CASE("SimulationConfig") {
         itr = config.getConditions().mechanisms.find("GluSynapse");
         CHECK(nonstd::get<double>(itr->second.find("property3")->second) == 0.025);
         CHECK(nonstd::get<std::string>(itr->second.find("property4")->second) == "test");
-        CHECK(config.getConditions().listModificationNames() ==
-              std::set<std::string>{"applyTTX", "no_SK_E2"});
-        const auto TTX = nonstd::get<SimulationConfig::ModificationTTX>(
-            config.getConditions().getModification("applyTTX"));
-        const auto configAllSects = nonstd::get<SimulationConfig::ModificationConfigureAllSections>(
-            config.getConditions().getModification("no_SK_E2"));
-        CHECK_THROWS_AS(config.getConditions().getModification("DoesNotExist"), SonataError);
+        const auto modifications = config.getConditions().getModifications();
+        CHECK(modifications.size() == 2);
+        const auto TTX = nonstd::get<SimulationConfig::ModificationTTX>(modifications[0]);
+        CHECK(TTX.name == "applyTTX");
         CHECK(TTX.type == SimulationConfig::ModificationBase::ModificationType::TTX);
         CHECK(TTX.nodeSet == "single");
+        const auto configAllSects = nonstd::get<SimulationConfig::ModificationConfigureAllSections>(modifications[1]);
+        CHECK(configAllSects.name == "no_SK_E2");
         CHECK(configAllSects.type ==
               SimulationConfig::ModificationBase::ModificationType::ConfigureAllSections);
         CHECK(configAllSects.sectionConfigure == "%s.gSK_E2bar_SK_E2 = 0");
@@ -361,7 +364,8 @@ TEST_CASE("SimulationConfig") {
               "axonal_comp_centers",
               "cell_imembrane",
               "compartment",
-              "soma"
+              "soma",
+              "lfp"
               });
 
         CHECK(config.getReport("soma").cells == "Column");
@@ -382,6 +386,7 @@ TEST_CASE("SimulationConfig") {
               axonalFilePath.lexically_normal());
         CHECK(config.getReport("cell_imembrane").endTime == 500.);
         CHECK(config.getReport("cell_imembrane").variableName == "i_membrane, IClamp");
+        CHECK(config.getReport("lfp").type == SimulationConfig::Report::Type::lfp);
 
         CHECK_NOTHROW(nlohmann::json::parse(config.getExpandedJSON()));
         CHECK(config.getBasePath() == basePath.lexically_normal());
@@ -428,6 +433,30 @@ TEST_CASE("SimulationConfig") {
             CHECK(input.width == 1);
         }
         {
+            const auto input = nonstd::get<SimulationConfig::InputSinusoidal>(config.getInput("ex_sinusoidal"));
+            CHECK(input.inputType == InputType::current_clamp);
+            CHECK(input.module == Module::sinusoidal);
+            CHECK(input.delay == 10);
+            CHECK(input.duration == 80);
+            CHECK(input.nodeSet == "Mosaic");
+
+            CHECK(input.frequency == 8);
+            CHECK(input.ampStart == 0.2);
+            CHECK(input.dt == 0.5);
+        }
+        {
+            const auto input = nonstd::get<SimulationConfig::InputSinusoidal>(config.getInput("ex_sinusoidal_default_dt"));
+            CHECK(input.inputType == InputType::current_clamp);
+            CHECK(input.module == Module::sinusoidal);
+            CHECK(input.delay == 10);
+            CHECK(input.duration == 80);
+            CHECK(input.nodeSet == "Mosaic");
+
+            CHECK(input.frequency == 80);
+            CHECK(input.ampStart == 2);
+            CHECK(input.dt == 0.025);
+        }
+        {
             const auto input = nonstd::get<SimulationConfig::InputSubthreshold>(config.getInput("ex_subthreshold"));
             CHECK(input.inputType == InputType::current_clamp);
             CHECK(input.module == Module::subthreshold);
@@ -469,6 +498,7 @@ TEST_CASE("SimulationConfig") {
             CHECK(input.randomSeed == nonstd::nullopt);
             CHECK(input.riseTime == 0.4);
             CHECK(input.decayTime == 4);
+            CHECK(input.reversal == 10);
         }
         {
             const auto input = nonstd::get<SimulationConfig::InputRelativeShotNoise>(config.getInput("ex_rel_shotnoise"));
@@ -477,12 +507,13 @@ TEST_CASE("SimulationConfig") {
             CHECK(input.delay == 0);
             CHECK(input.duration == 1000);
             CHECK(input.nodeSet == "L5E");
-            CHECK(input.ampCv == 0.63);
             CHECK(input.meanPercent == 70);
             CHECK(input.sdPercent == 40);
             CHECK(input.randomSeed == 230522);
             CHECK(input.riseTime == 0.4);
             CHECK(input.decayTime == 4);
+            CHECK(input.reversal == 0);
+            CHECK(input.relativeSkew == 0.5);
         }
         {
             const auto input = nonstd::get<SimulationConfig::InputHyperpolarizing>(config.getInput("ex_hyperpolarizing"));
@@ -499,8 +530,7 @@ TEST_CASE("SimulationConfig") {
             CHECK(input.delay == 0);
             CHECK(input.duration == 40000);
             CHECK(input.nodeSet == "Column");
-            CHECK(endswith(input.spikeFile, "replay.dat"));
-            CHECK(input.source == "ML_afferents");
+            CHECK(endswith(input.spikeFile, "replay.h5"));
         }
         {
             const auto input = nonstd::get<SimulationConfig::InputSeclamp>(config.getInput("ex_seclamp"));
@@ -517,10 +547,12 @@ TEST_CASE("SimulationConfig") {
                 config.getInput("ex_abs_shotnoise"));
             CHECK(input.inputType == InputType::conductance);
             CHECK(input.module == Module::absolute_shot_noise);
-            CHECK(input.ampCv == 0.63);
             CHECK(input.mean == 50);
             CHECK(input.sigma == 5);
+            CHECK(input.reversal == 10);
             CHECK(input.randomSeed == nonstd::nullopt);
+            CHECK(input.representsPhysicalElectrode == true);
+            CHECK(input.relativeSkew == 0.1);
         }
         {
             const auto input = nonstd::get<SimulationConfig::InputOrnsteinUhlenbeck>(
@@ -532,6 +564,7 @@ TEST_CASE("SimulationConfig") {
             CHECK(input.mean == 50);
             CHECK(input.sigma == 5);
             CHECK(input.randomSeed == nonstd::nullopt);
+            CHECK(input.representsPhysicalElectrode == false);
         }
         {
             const auto input = nonstd::get<SimulationConfig::InputRelativeOrnsteinUhlenbeck>(
@@ -559,6 +592,8 @@ TEST_CASE("SimulationConfig") {
                                                                "ex_replay",
                                                                "ex_seclamp",
                                                                "ex_shotnoise",
+                                                               "ex_sinusoidal",
+                                                               "ex_sinusoidal_default_dt",
                                                                "ex_subthreshold"});
 
         auto overrides = config.getConnectionOverrides();
@@ -629,6 +664,8 @@ TEST_CASE("SimulationConfig") {
         CHECK(config.getRun().ionchannelSeed == 0);
         CHECK(config.getRun().minisSeed == 0);
         CHECK(config.getRun().synapseSeed == 0);
+        CHECK(config.getRun().electrodesFile == "");
+        CHECK(config.getRun().spikeThreshold == -30.0);
     }
 
     SECTION("Exception") {
@@ -1186,6 +1223,27 @@ TEST_CASE("SimulationConfig") {
                 "random_seed": 12345,
                 "dt": 0.05,
                 "tstop": 1000
+              }
+            })";
+            CHECK_THROWS_AS(SimulationConfig(contents, "./"), SonataError);
+        }
+        {
+            // Replay with a non-h5 file
+            auto contents = R"({
+              "run": {
+                "random_seed": 12345,
+                "dt": 0.05,
+                "tstop": 1000
+              },
+              "inputs" : {
+                "ex_replay": {
+                    "input_type": "spikes",
+                    "module": "synapse_replay",
+                    "delay": 0.0,
+                    "duration": 40000.0,
+                    "spike_file": "replay.dat",
+                    "node_set": "Column"
+                }
               }
             })";
             CHECK_THROWS_AS(SimulationConfig(contents, "./"), SonataError);

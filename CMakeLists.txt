@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.3)
-cmake_policy(VERSION 3.3)
+cmake_minimum_required(VERSION 3.16)
+cmake_policy(VERSION 3.16)
 
 if(NOT SONATA_VERSION)
     execute_process(COMMAND git describe --tags
@@ -39,10 +39,20 @@ project(sonata VERSION ${SONATA_VERSION})
 option(EXTLIB_FROM_SUBMODULES "Use Git submodules for header-only dependencies" OFF)
 option(SONATA_PYTHON "Build Python extensions" OFF)
 option(SONATA_TESTS "Build tests" ON)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(SONATA_ENABLE_COVERAGE_DEFAULT ON)
+else()
+  set(SONATA_ENABLE_COVERAGE_DEFAULT OFF)
+endif()
+option(SONATA_ENABLE_COVERAGE "Enable measuring test coverage." ${SONATA_ENABLE_COVERAGE_DEFAULT})
+
+# For `Findcoverage.cmake` and friends.
+set(ENABLE_COVERAGE ${SONATA_ENABLE_COVERAGE})
+
 option(SONATA_CXX_WARNINGS "Compile C++ with warnings as errors, for glibcxx turn on assertions" ON)
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/CMake)
-set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY true)
 
 set(SONATA_CXX_MINIMUM_STANDARD 14)
 if(NOT "${CMAKE_CXX_STANDARD}")
@@ -58,12 +68,6 @@ set(SONATA_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include)
 set(SONATA_COMPILE_OPTIONS -Wall -Wextra -pedantic)
 if(SONATA_CXX_WARNINGS)
     set(SONATA_COMPILE_OPTIONS ${SONATA_COMPILE_OPTIONS} -Werror -Wp,-D_GLIBCXX_ASSERTIONS)
-endif()
-
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(ENABLE_COVERAGE ON)
-else()
-    set(ENABLE_COVERAGE OFF)
 endif()
 
 # =============================================================================
@@ -91,10 +95,12 @@ set(SONATA_SRC
     src/edge_index.cpp
     src/edges.cpp
     src/hdf5_mutex.cpp
+    src/hdf5_reader.cpp
     src/node_sets.cpp
     src/nodes.cpp
     src/population.cpp
     src/report_reader.cpp
+    src/selection.cpp
     src/utils.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/src/version.cpp
     )
@@ -131,6 +137,8 @@ foreach(TARGET sonata_shared sonata_static)
             PRIVATE gcov
         )
     endif()
+
+    add_library(sonata::${TARGET} ALIAS ${TARGET})
 endforeach(TARGET)
 
 set_target_properties(sonata_shared

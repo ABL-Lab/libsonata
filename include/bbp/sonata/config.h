@@ -11,7 +11,6 @@
 
 #pragma once
 
-#include <memory>  // std::unique_ptr
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -93,11 +92,6 @@ struct SONATA_API NodePopulationProperties: public CommonPopulationProperties {
      * mandatory.
      */
     nonstd::optional<std::string> microdomainsFile{nonstd::nullopt};
-
-    /**
-     * Path to the directory containing the dendritic spine morphologies.
-     */
-    nonstd::optional<std::string> spineMorphologiesDir{nonstd::nullopt};
 };
 
 /**
@@ -113,6 +107,11 @@ struct SONATA_API EdgePopulationProperties: public CommonPopulationProperties {
      * Path to spatial_segment_index
      */
     nonstd::optional<std::string> endfeetMeshesFile{nonstd::nullopt};
+
+    /**
+     * Path to the directory containing the dendritic spine morphologies.
+     */
+    nonstd::optional<std::string> spineMorphologiesDir{nonstd::nullopt};
 };
 
 /**
@@ -124,7 +123,7 @@ class SONATA_API CircuitConfig
     enum class ConfigStatus {
         /// needed for parsing json contents that are null / not an enum value
         invalid,
-        /// all mandatory properties exist, and the the config should return
+        /// all mandatory properties exist, and the config should return
         /// correct values in all possible cases
         complete,
         /**
@@ -182,8 +181,8 @@ class SONATA_API CircuitConfig
      *
      * \throws SonataError if the given population does not exist in any node network.
      */
+    NodePopulation getNodePopulation(const std::string& name, const Hdf5Reader& hdf5_reader) const;
     NodePopulation getNodePopulation(const std::string& name) const;
-
     /**
      * Returns a set with all available population names across all the edge networks.
      */
@@ -195,6 +194,7 @@ class SONATA_API CircuitConfig
      *
      * \throws SonataError if the given population does not exist in any edge network.
      */
+    EdgePopulation getEdgePopulation(const std::string& name, const Hdf5Reader& hdf5_reader) const;
     EdgePopulation getEdgePopulation(const std::string& name) const;
 
     /**
@@ -240,7 +240,7 @@ class SONATA_API CircuitConfig
     // manifest variables
     std::string _expandedJSON;
 
-    /// How strict we are checking the circuit config
+    // How strict we are checking the circuit config
     ConfigStatus _status = ConfigStatus::complete;
 
     // Path to the nodesets file
@@ -263,7 +263,14 @@ class SONATA_API SimulationConfig
      * Parameters defining global simulation settings for spike reports
      */
     struct Run {
-        enum class IntegrationMethod { invalid = -1, euler, nicholson, nicholson_ion };
+        enum class IntegrationMethod { invalid = -1, euler, crank_nicolson, crank_nicolson_ion };
+
+        static constexpr double DEFAULT_spikeThreshold = -30.0;
+        static constexpr IntegrationMethod DEFAULT_IntegrationMethod = IntegrationMethod::euler;
+        static constexpr int DEFAULT_stimulusSeed = 0;
+        static constexpr int DEFAULT_ionchannelSeed = 0;
+        static constexpr int DEFAULT_minisSeed = 0;
+        static constexpr int DEFAULT_synapseSeed = 0;
 
         /// Biological simulation end time in milliseconds
         double tstop{};
@@ -272,20 +279,22 @@ class SONATA_API SimulationConfig
         /// Random seed
         int randomSeed{};
         /// The spike detection threshold. Default is -30mV
-        int spikeThreshold;
+        double spikeThreshold = DEFAULT_spikeThreshold;
         /// Selects the NEURON/CoreNEURON integration method. This parameter sets the NEURON
-        /// global variable h.secondorder. Default 0 ('euler')
-        IntegrationMethod integrationMethod;
+        /// global variable h.secondorder, default is "euler".
+        IntegrationMethod integrationMethod = DEFAULT_IntegrationMethod;
         /// A non-negative integer used for seeding noise stimuli and any other future stochastic
         /// stimuli, default is 0.
-        int stimulusSeed;
+        int stimulusSeed = DEFAULT_stimulusSeed;
         /// A non-negative integer used for seeding stochastic ion channels, default is 0.
-        int ionchannelSeed;
+        int ionchannelSeed = DEFAULT_ionchannelSeed;
         /// A non-negative integer used for seeding the Poisson processes that drives the minis,
         /// default is 0.
-        int minisSeed;
+        int minisSeed = DEFAULT_minisSeed;
         /// A non-negative integer used for seeding stochastic synapses, default is 0.
-        int synapseSeed;
+        int synapseSeed = DEFAULT_synapseSeed;
+        /// Filename that contains the weights for the LFP calculation.
+        std::string electrodesFile;
     };
     /**
      * Parameters to override simulator output for spike reports
@@ -293,14 +302,19 @@ class SONATA_API SimulationConfig
     struct Output {
         enum class SpikesSortOrder { invalid = -1, none, by_id, by_time };
 
+        static constexpr char DEFAULT_outputDir[] = "output";
+        static constexpr char DEFAULT_logFile[] = "";
+        static constexpr char DEFAULT_spikesFile[] = "out.h5";
+        static constexpr SpikesSortOrder DEFAULT_sortOrder = SpikesSortOrder::by_time;
+
         /// Spike report file output directory. Default is "output"
-        std::string outputDir;
+        std::string outputDir = DEFAULT_outputDir;
         /// Filename where console output is written. Default is STDOUT.
-        std::string logFile;
+        std::string logFile = DEFAULT_logFile;
         /// Spike report file name. Default is "out.h5"
-        std::string spikesFile;
+        std::string spikesFile = DEFAULT_spikesFile;
         /// The sorting order of the spike report. Default is "by_time"
-        SpikesSortOrder sortOrder;
+        SpikesSortOrder sortOrder = DEFAULT_sortOrder;
     };
 
     struct ModificationBase {
@@ -310,6 +324,8 @@ class SONATA_API SimulationConfig
         std::string nodeSet;
         /// Name of the manipulation. Supported values are “TTX” and “ConfigureAllSections”.
         ModificationType type;
+        /// Name of the modification setting.
+        std::string name;
     };
 
     struct ModificationTTX: public ModificationBase {};
@@ -323,46 +339,44 @@ class SONATA_API SimulationConfig
 
     using Modification = nonstd::variant<ModificationTTX, ModificationConfigureAllSections>;
 
-    using ModificationMap = std::unordered_map<std::string, Modification>;
-
     /**
      * Parameters defining global experimental conditions.
      */
     struct Conditions {
         enum class SpikeLocation { invalid = -1, soma, AIS };
+        static constexpr double DEFAULT_celsius = 34.0;
+        static constexpr double DEFAULT_vInit = -80.0;
+        static constexpr SpikeLocation DEFAULT_spikeLocation = SpikeLocation::soma;
+        static constexpr bool DEFAULT_randomizeGabaRiseTime = false;
 
         /// Temperature of experiment. Default is 34.0
-        double celsius;
+        double celsius = DEFAULT_celsius;
         /// Initial membrane voltage in mV. Default is -80
-        double vInit;
+        double vInit = DEFAULT_vInit;
         /// The spike detection location. Can be either ‘soma’ or 'AIS'. Default is 'soma'
-        SpikeLocation spikeLocation;
+        SpikeLocation spikeLocation = DEFAULT_spikeLocation;
         /// Extracellular calcium concentration, being applied to the synapse uHill parameter in
         /// order to scale the U parameter of synapses. Default is None.
         nonstd::optional<double> extracellularCalcium{nonstd::nullopt};
         /// Enable legacy behavior to randomize the GABA_A rise time in the helper functions.
         /// Default is false
-        bool randomizeGabaRiseTime;
+        bool randomizeGabaRiseTime = DEFAULT_randomizeGabaRiseTime;
         /// Properties to assign values to variables in synapse MOD files.
         /// The format is a dictionary with keys being the SUFFIX names and values being
         /// dictionaries of variables' names and values.
         std::unordered_map<std::string, std::unordered_map<std::string, variantValueType>>
             mechanisms;
-        /// Collection of dictionaries with each member decribing a modification that mimics
-        /// experimental manipulations to the circuit.
-        ModificationMap modifications;
-        /// Returns the names of the modifications
-        std::set<std::string> listModificationNames() const;
-        /// Returns the given modification parameters
-        /// \throws SonataError if the given modification name does not exist
-        const Modification& getModification(const std::string& name) const;
+        /// List of modifications that mimics experimental manipulations to the circuit.
+        std::vector<Modification> modifications;
+        /// Method to return the full list of modifications in the Conditions section.
+        const std::vector<Modification>& getModifications() const noexcept;
     };
     /**
      * List of report parameters collected during the simulation
      */
     struct Report {
         enum class Sections { invalid = -1, soma, axon, dend, apic, all };
-        enum class Type { invalid = -1, compartment, summation, synapse };
+        enum class Type { invalid = -1, compartment, lfp, summation, synapse };
         enum class Scaling { invalid = -1, none, area };
         enum class Compartments { invalid = -1, center, all };
 
@@ -392,7 +406,7 @@ class SONATA_API SimulationConfig
         double endTime{};
         /// Report filename. Default is "<report name>.h5"
         std::string fileName;
-        /// Allows for supressing a report so that is not created. Default is true
+        /// Allows for suppressing a report so that is not created. Default is true
         bool enabled = true;
     };
 
@@ -404,6 +418,7 @@ class SONATA_API SimulationConfig
             linear,
             relative_linear,
             pulse,
+            sinusoidal,
             subthreshold,
             hyperpolarizing,
             synapse_replay,
@@ -442,6 +457,8 @@ class SONATA_API SimulationConfig
         double ampStart{};
         /// The final current when a stimulus concludes (nA)
         double ampEnd{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     struct InputRelativeLinear: public InputBase {
@@ -449,31 +466,47 @@ class SONATA_API SimulationConfig
         double percentStart{};
         /// The percentage of a cell's threshold current to inject at the end
         double percentEnd{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     struct InputPulse: public InputBase {
         /// The amount of current initially injected (nA)
         double ampStart{};
-        /// The final current when a stimulus concludes (nA)
-        double ampEnd{};
         /// The length of time each pulse lasts (ms)
         double width{};
         /// The frequency of pulse trains (Hz)
         double frequency{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
+    };
+
+    struct InputSinusoidal: public InputBase {
+        /// The peak amplitude of the sinusoid. Given in nA.
+        double ampStart{};
+        /// The frequency of the sinusoidal waveform. Given in Hz.
+        double frequency{};
+        /// Timestep of generated signal in ms. Default is 0.025 ms
+        double dt{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     struct InputSubthreshold: public InputBase {
         /// A percentage adjusted from 100 of a cell's threshold current
         double percentLess{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
-    struct InputHyperpolarizing: public InputBase {};
+    struct InputHyperpolarizing: public InputBase {
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
+    };
 
     struct InputSynapseReplay: public InputBase {
-        /// The location of the file with the spike info for injection
+        /// The location of the file with the spike info for injection, file extension must be .h5
         std::string spikeFile;
-        /// The node set to replay spikes from
-        std::string source;
     };
 
     struct InputSeclamp: public InputBase {
@@ -491,6 +524,8 @@ class SONATA_API SimulationConfig
         /// State var to track whether the value of injected noise current is mean or
         /// mean_percent
         double variance{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     struct InputShotNoise: public InputBase {
@@ -500,6 +535,8 @@ class SONATA_API SimulationConfig
         double decayTime{};
         /// Override the random seed to introduce correlations between cells, default = None
         nonstd::optional<int> randomSeed{nonstd::nullopt};
+        /// Reversal potential for conductance injection in mV. Default is 0
+        double reversal{};
         /// Timestep of generated signal in ms. Default is 0.25 ms
         double dt{};
         /// Rate of Poisson events (Hz)
@@ -509,6 +546,8 @@ class SONATA_API SimulationConfig
         /// The variance of gamma-distributed amplitudes in nA^2 (current_clamp) or uS^2
         /// (conductance)
         double ampVar{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     struct InputRelativeShotNoise: public InputBase {
@@ -518,16 +557,22 @@ class SONATA_API SimulationConfig
         double decayTime{};
         /// Override the random seed to introduce correlations between cells, default = None
         nonstd::optional<int> randomSeed{nonstd::nullopt};
+        /// Reversal potential for conductance injection in mV. Default is 0
+        double reversal{};
         /// Timestep of generated signal in ms. Default is 0.25 ms
         double dt{};
-        /// The coefficient of variation (sd/mean) of gamma-distributed amplitudes
-        double ampCv{};
         /// Signal mean as percentage of a cell’s threshold current (current_clamp) or inverse input
         /// resistance (conductance)
         double meanPercent{};
         /// signal std dev as percentage of a cell’s threshold current (current_clamp) or inverse
         /// input resistance (conductance).
         double sdPercent{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
+        /// Signal skewness as a fraction in [0, 1] representing a value between the minimum and
+        /// maximum skewness values compatible with the given signal mean and std dev. Default is
+        /// 0.5.
+        double relativeSkew{};
     };
 
     struct InputAbsoluteShotNoise: public InputBase {
@@ -537,14 +582,20 @@ class SONATA_API SimulationConfig
         double decayTime{};
         /// Override the random seed to introduce correlations between cells, default = None
         nonstd::optional<int> randomSeed{nonstd::nullopt};
+        /// Reversal potential for conductance injection in mV. Default is 0
+        double reversal{};
         /// Timestep of generated signal in ms. Default is 0.25 ms
         double dt{};
-        /// The coefficient of variation (sd/mean) of gamma-distributed amplitudes
-        double ampCv{};
         /// Signal mean in nA (current_clamp) or uS (conductance).
         double mean{};
         /// signal std dev in nA (current_clamp) or uS (conductance).
         double sigma{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
+        /// Signal skewness as a fraction in [0, 1] representing a value between the minimum and
+        /// maximum skewness values compatible with the given signal mean and std dev. Default is
+        /// 0.5.
+        double relativeSkew{};
     };
 
     struct InputOrnsteinUhlenbeck: public InputBase {
@@ -560,6 +611,8 @@ class SONATA_API SimulationConfig
         double mean{};
         /// Signal std dev in nA (current_clamp) or uS (conductance)
         double sigma{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     struct InputRelativeOrnsteinUhlenbeck: public InputBase {
@@ -577,11 +630,14 @@ class SONATA_API SimulationConfig
         /// Signal std dev as percentage of a cell’s threshold current (current_clamp) or inverse
         /// input resistance (conductance)
         double sdPercent{};
+        /// Whether this input represents a physical electrode. Default is false
+        bool representsPhysicalElectrode = false;
     };
 
     using Input = nonstd::variant<InputLinear,
                                   InputRelativeLinear,
                                   InputPulse,
+                                  InputSinusoidal,
                                   InputSubthreshold,
                                   InputHyperpolarizing,
                                   InputSynapseReplay,

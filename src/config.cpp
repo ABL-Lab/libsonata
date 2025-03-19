@@ -10,12 +10,8 @@
  *************************************************************************/
 
 #include <bbp/sonata/config.h>
-#include <bbp/sonata/optional.hpp>
 
 #include <bbp/sonata/optional.hpp>
-#include <cassert>
-#include <fstream>
-#include <memory>
 #include <regex>
 #include <set>
 #include <string>
@@ -24,7 +20,6 @@
 #include <nlohmann/json.hpp>
 
 #include "../extlib/filesystem.hpp"
-#include "population.hpp"
 #include "utils.h"
 
 // Add a specialization of adl_serializer to the nlohmann namespace for conversion from/to
@@ -63,11 +58,12 @@ NLOHMANN_JSON_SERIALIZE_ENUM(SimulationConfig::Conditions::SpikeLocation,
                               {SimulationConfig::Conditions::SpikeLocation::soma, "soma"},
                               {SimulationConfig::Conditions::SpikeLocation::AIS, "AIS"}})
 
-NLOHMANN_JSON_SERIALIZE_ENUM(SimulationConfig::Run::IntegrationMethod,
-                             {{SimulationConfig::Run::IntegrationMethod::invalid, nullptr},
-                              {SimulationConfig::Run::IntegrationMethod::euler, 0},
-                              {SimulationConfig::Run::IntegrationMethod::nicholson, 1},
-                              {SimulationConfig::Run::IntegrationMethod::nicholson_ion, 2}})
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    SimulationConfig::Run::IntegrationMethod,
+    {{SimulationConfig::Run::IntegrationMethod::invalid, nullptr},
+     {SimulationConfig::Run::IntegrationMethod::euler, "euler"},
+     {SimulationConfig::Run::IntegrationMethod::crank_nicolson, "crank_nicolson"},
+     {SimulationConfig::Run::IntegrationMethod::crank_nicolson_ion, "crank_nicolson_ion"}})
 
 NLOHMANN_JSON_SERIALIZE_ENUM(SimulationConfig::Output::SpikesSortOrder,
                              {{SimulationConfig::Output::SpikesSortOrder::invalid, nullptr},
@@ -85,6 +81,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(SimulationConfig::Report::Sections,
 NLOHMANN_JSON_SERIALIZE_ENUM(SimulationConfig::Report::Type,
                              {{SimulationConfig::Report::Type::invalid, nullptr},
                               {SimulationConfig::Report::Type::compartment, "compartment"},
+                              {SimulationConfig::Report::Type::lfp, "lfp"},
                               {SimulationConfig::Report::Type::summation, "summation"},
                               {SimulationConfig::Report::Type::synapse, "synapse"}})
 NLOHMANN_JSON_SERIALIZE_ENUM(SimulationConfig::Report::Scaling,
@@ -102,6 +99,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
      {SimulationConfig::InputBase::Module::linear, "linear"},
      {SimulationConfig::InputBase::Module::relative_linear, "relative_linear"},
      {SimulationConfig::InputBase::Module::pulse, "pulse"},
+     {SimulationConfig::InputBase::Module::sinusoidal, "sinusoidal"},
      {SimulationConfig::InputBase::Module::subthreshold, "subthreshold"},
      {SimulationConfig::InputBase::Module::hyperpolarizing, "hyperpolarizing"},
      {SimulationConfig::InputBase::Module::synapse_replay, "synapse_replay"},
@@ -135,6 +133,25 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
      {SimulationConfig::ModificationBase::ModificationType::TTX, "TTX"},
      {SimulationConfig::ModificationBase::ModificationType::ConfigureAllSections,
       "ConfigureAllSections"}})
+
+// { in C++14; one has to declare static constexpr members; this can go away in c++17
+#define D(name) decltype(SimulationConfig::name) constexpr SimulationConfig::name;
+D(Output::DEFAULT_outputDir)
+D(Conditions::DEFAULT_randomizeGabaRiseTime)
+D(Output::DEFAULT_logFile)
+D(Run::DEFAULT_stimulusSeed)
+D(Conditions::DEFAULT_spikeLocation)
+D(Run::DEFAULT_ionchannelSeed)
+D(Output::DEFAULT_sortOrder)
+D(Run::DEFAULT_IntegrationMethod)
+D(Conditions::DEFAULT_vInit)
+D(Run::DEFAULT_minisSeed)
+D(Output::DEFAULT_spikesFile)
+D(Conditions::DEFAULT_celsius)
+D(Run::DEFAULT_synapseSeed)
+D(Run::DEFAULT_spikeThreshold)
+#undef D
+// }
 
 namespace {
 // to be replaced by std::filesystem once C++17 is used
@@ -206,9 +223,13 @@ PopulationType getPopulationProperties(
 
 template <typename PopulationType, typename PopulationPropertiesT>
 PopulationType getPopulation(const std::string& populationName,
-                             const std::unordered_map<std::string, PopulationPropertiesT>& src) {
+                             const std::unordered_map<std::string, PopulationPropertiesT>& src,
+                             const Hdf5Reader& hdf5_reader) {
     const auto properties = getPopulationProperties(populationName, src);
-    return PopulationType(properties.elementsPath, properties.typesPath, populationName);
+    return PopulationType(properties.elementsPath,
+                          properties.typesPath,
+                          populationName,
+                          hdf5_reader);
 }
 
 std::map<std::string, std::string> replaceVariables(std::map<std::string, std::string> variables) {
@@ -284,7 +305,7 @@ Variables readVariables(const nlohmann::json& json) {
         return variables;
     }
 
-    const auto manifest = json["manifest"];
+    const auto& manifest = json["manifest"];
 
     const std::regex regexVariable(R"(\$[a-zA-Z0-9_]*)");
 
@@ -306,7 +327,7 @@ std::string toAbsolute(const fs::path& base, const fs::path& path) {
     return absolute.lexically_normal().string();
 }
 
-template <typename Type, typename std::enable_if<std::is_enum<Type>::value>::type* = nullptr>
+template <typename Type, std::enable_if_t<std::is_enum<Type>::value>* = nullptr>
 void raiseIfInvalidEnum(const char* name,
                         const Type& buf,
                         const std::string& found_value,
@@ -390,6 +411,10 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         parseCommon(ret);
         parseMandatory(valueIt, "amp_start", debugStr, ret.ampStart);
         parseOptional(valueIt, "amp_end", ret.ampEnd, {ret.ampStart});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         return ret;
     }
     case Module::relative_linear: {
@@ -397,6 +422,10 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         parseCommon(ret);
         parseMandatory(valueIt, "percent_start", debugStr, ret.percentStart);
         parseOptional(valueIt, "percent_end", ret.percentEnd, {ret.percentStart});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         return ret;
     }
     case Module::pulse: {
@@ -405,13 +434,32 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         parseMandatory(valueIt, "amp_start", debugStr, ret.ampStart);
         parseMandatory(valueIt, "width", debugStr, ret.width);
         parseMandatory(valueIt, "frequency", debugStr, ret.frequency);
-        parseOptional(valueIt, "amp_end", ret.ampEnd, {ret.ampStart});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
+        return ret;
+    }
+    case Module::sinusoidal: {
+        SimulationConfig::InputSinusoidal ret;
+        parseCommon(ret);
+        parseMandatory(valueIt, "amp_start", debugStr, ret.ampStart);
+        parseMandatory(valueIt, "frequency", debugStr, ret.frequency);
+        parseOptional(valueIt, "dt", ret.dt, {0.025});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         return ret;
     }
     case Module::subthreshold: {
         SimulationConfig::InputSubthreshold ret;
         parseCommon(ret);
         parseMandatory(valueIt, "percent_less", debugStr, ret.percentLess);
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         return ret;
     }
     case Module::noise: {
@@ -436,6 +484,10 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         }
 
         parseOptional(valueIt, "variance", ret.variance);
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         return ret;
     }
     case Module::shot_noise: {
@@ -444,7 +496,12 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         parseMandatory(valueIt, "rise_time", debugStr, ret.riseTime);
         parseMandatory(valueIt, "decay_time", debugStr, ret.decayTime);
         parseOptional(valueIt, "random_seed", ret.randomSeed);
+        parseOptional(valueIt, "reversal", ret.reversal, {0.0});
         parseOptional(valueIt, "dt", ret.dt, {0.25});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         parseMandatory(valueIt, "rate", debugStr, ret.rate);
         parseMandatory(valueIt, "amp_mean", debugStr, ret.ampMean);
         parseMandatory(valueIt, "amp_var", debugStr, ret.ampVar);
@@ -457,10 +514,15 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         parseMandatory(valueIt, "rise_time", debugStr, ret.riseTime);
         parseMandatory(valueIt, "decay_time", debugStr, ret.decayTime);
         parseOptional(valueIt, "random_seed", ret.randomSeed);
+        parseOptional(valueIt, "reversal", ret.reversal, {0.0});
         parseOptional(valueIt, "dt", ret.dt, {0.25});
-        parseMandatory(valueIt, "amp_cv", debugStr, ret.ampCv);
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         parseMandatory(valueIt, "mean_percent", debugStr, ret.meanPercent);
         parseMandatory(valueIt, "sd_percent", debugStr, ret.sdPercent);
+        parseOptional(valueIt, "relative_skew", ret.relativeSkew, {0.5});
         return ret;
     }
     case Module::absolute_shot_noise: {
@@ -470,23 +532,35 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         parseMandatory(valueIt, "rise_time", debugStr, ret.riseTime);
         parseMandatory(valueIt, "decay_time", debugStr, ret.decayTime);
         parseOptional(valueIt, "random_seed", ret.randomSeed);
+        parseOptional(valueIt, "reversal", ret.reversal, {0.0});
         parseOptional(valueIt, "dt", ret.dt, {0.25});
-        parseMandatory(valueIt, "amp_cv", debugStr, ret.ampCv);
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         parseMandatory(valueIt, "mean", debugStr, ret.mean);
         parseMandatory(valueIt, "sigma", debugStr, ret.sigma);
+        parseOptional(valueIt, "relative_skew", ret.relativeSkew, {0.5});
         return ret;
     }
     case Module::hyperpolarizing: {
         SimulationConfig::InputHyperpolarizing ret;
         parseCommon(ret);
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
         return ret;
     }
     case Module::synapse_replay: {
         SimulationConfig::InputSynapseReplay ret;
         parseCommon(ret);
         parseMandatory(valueIt, "spike_file", debugStr, ret.spikeFile);
-        parseOptional(valueIt, "source", ret.source);
         ret.spikeFile = toAbsolute(basePath, ret.spikeFile);
+        const auto extension = fs::path(ret.spikeFile).extension().string();
+        if (extension != ".h5") {
+            throw SonataError("Replay spike_file should be a SONATA h5 file");
+        }
         return ret;
     }
     case Module::seclamp: {
@@ -500,9 +574,13 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         SimulationConfig::InputOrnsteinUhlenbeck ret;
         parseCommon(ret);
         parseMandatory(valueIt, "tau", debugStr, ret.tau);
-        parseOptional(valueIt, "reversal", ret.reversal);
+        parseOptional(valueIt, "reversal", ret.reversal, {0.0});
         parseOptional(valueIt, "random_seed", ret.randomSeed);
         parseOptional(valueIt, "dt", ret.dt, {0.25});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
 
         parseMandatory(valueIt, "mean", debugStr, ret.mean);
         parseMandatory(valueIt, "sigma", debugStr, ret.sigma);
@@ -512,9 +590,13 @@ SimulationConfig::Input parseInputModule(const nlohmann::json& valueIt,
         SimulationConfig::InputRelativeOrnsteinUhlenbeck ret;
         parseCommon(ret);
         parseMandatory(valueIt, "tau", debugStr, ret.tau);
-        parseOptional(valueIt, "reversal", ret.reversal);
+        parseOptional(valueIt, "reversal", ret.reversal, {0.0});
         parseOptional(valueIt, "random_seed", ret.randomSeed);
         parseOptional(valueIt, "dt", ret.dt, {0.25});
+        parseOptional(valueIt,
+                      "represents_physical_electrode",
+                      ret.representsPhysicalElectrode,
+                      {false});
 
         parseMandatory(valueIt, "mean_percent", debugStr, ret.meanPercent);
         parseMandatory(valueIt, "sd_percent", debugStr, ret.sdPercent);
@@ -544,11 +626,16 @@ void parseConditionsMechanisms(
 }
 
 void parseConditionsModifications(const nlohmann::json& it,
-                                  SimulationConfig::ModificationMap& buf) {
+                                  std::vector<SimulationConfig::Modification>& buf) {
     const auto sectionIt = it.find("modifications");
-    if (sectionIt == it.end()) {
+    if (sectionIt == it.end() || sectionIt->is_null()) {
         return;
     }
+    if (!sectionIt->is_array()) {
+        throw SonataError("`modifications` must be an array");
+    }
+    buf.reserve(sectionIt->size());
+
     for (auto& mIt : sectionIt->items()) {
         const auto valueIt = mIt.value();
         const auto debugStr = fmt::format("modification {}", mIt.key());
@@ -560,16 +647,18 @@ void parseConditionsModifications(const nlohmann::json& it,
         case SimulationConfig::ModificationBase::ModificationType::TTX: {
             SimulationConfig::ModificationTTX result;
             result.type = type;
+            parseMandatory(valueIt, "name", debugStr, result.name);
             parseMandatory(valueIt, "node_set", debugStr, result.nodeSet);
-            buf[mIt.key()] = result;
+            buf.push_back(std::move(result));
             break;
         }
         case SimulationConfig::ModificationBase::ModificationType::ConfigureAllSections: {
             SimulationConfig::ModificationConfigureAllSections result;
             result.type = type;
+            parseMandatory(valueIt, "name", debugStr, result.name);
             parseMandatory(valueIt, "node_set", debugStr, result.nodeSet);
             parseMandatory(valueIt, "section_configure", debugStr, result.sectionConfigure);
-            buf[mIt.key()] = result;
+            buf.push_back(std::move(result));
             break;
         }
         default:
@@ -742,9 +831,6 @@ class CircuitConfig::Parser
             if (!component.microdomainsFile) {
                 component.microdomainsFile = defaultComponents.microdomainsFile;
             }
-            if (!component.spineMorphologiesDir) {
-                component.spineMorphologiesDir = defaultComponents.spineMorphologiesDir;
-            }
         }
     }
 
@@ -757,6 +843,9 @@ class CircuitConfig::Parser
 
             if (!component.endfeetMeshesFile) {
                 component.endfeetMeshesFile = defaultComponents.endfeetMeshesFile;
+            }
+            if (!component.spineMorphologiesDir) {
+                component.spineMorphologiesDir = defaultComponents.spineMorphologiesDir;
             }
         }
     }
@@ -838,8 +927,6 @@ class CircuitConfig::Parser
             popProperties.vasculatureFile = getOptionalJSONPath(popData, "vasculature_file");
             popProperties.vasculatureMesh = getOptionalJSONPath(popData, "vasculature_mesh");
             popProperties.microdomainsFile = getOptionalJSONPath(popData, "microdomains_file");
-            popProperties.spineMorphologiesDir = getOptionalJSONPath(popData,
-                                                                     "spine_morphologies_dir");
             });
     }
 
@@ -851,6 +938,8 @@ class CircuitConfig::Parser
             [&](EdgePopulationProperties& popProperties, const nlohmann::json& popData) {
             popProperties.spatialSynapseIndexDir = getJSONPath(popData, "spatial_synapse_index_dir");
             popProperties.endfeetMeshesFile = getOptionalJSONPath(popData, "endfeet_meshes_file");
+            popProperties.spineMorphologiesDir = getOptionalJSONPath(popData,
+                                                                     "spine_morphologies_dir");
             });
     }
 
@@ -903,7 +992,7 @@ CircuitConfig::CircuitConfig(const std::string& contents, const std::string& bas
 }
 
 CircuitConfig CircuitConfig::fromFile(const std::string& path) {
-    return CircuitConfig(readFile(path), fs::path(path).parent_path());
+    return {readFile(path), fs::path(path).parent_path()};
 }
 
 CircuitConfig::ConfigStatus CircuitConfig::getCircuitConfigStatus() const {
@@ -919,7 +1008,12 @@ std::set<std::string> CircuitConfig::listNodePopulations() const {
 }
 
 NodePopulation CircuitConfig::getNodePopulation(const std::string& name) const {
-    return getPopulation<NodePopulation>(name, _nodePopulationProperties);
+    return getNodePopulation(name, Hdf5Reader());
+}
+
+NodePopulation CircuitConfig::getNodePopulation(const std::string& name,
+                                                const Hdf5Reader& hdf5_reader) const {
+    return getPopulation<NodePopulation>(name, _nodePopulationProperties, hdf5_reader);
 }
 
 std::set<std::string> CircuitConfig::listEdgePopulations() const {
@@ -927,7 +1021,12 @@ std::set<std::string> CircuitConfig::listEdgePopulations() const {
 }
 
 EdgePopulation CircuitConfig::getEdgePopulation(const std::string& name) const {
-    return getPopulation<EdgePopulation>(name, _edgePopulationProperties);
+    return getPopulation<EdgePopulation>(name, _edgePopulationProperties, Hdf5Reader());
+}
+
+EdgePopulation CircuitConfig::getEdgePopulation(const std::string& name,
+                                                const Hdf5Reader& hdf5_reader) const {
+    return getPopulation<EdgePopulation>(name, _edgePopulationProperties, hdf5_reader);
 }
 
 NodePopulationProperties CircuitConfig::getNodePopulationProperties(const std::string& name) const {
@@ -963,15 +1062,27 @@ class SimulationConfig::Parser
         parseMandatory(*runIt, "tstop", "run", result.tstop);
         parseMandatory(*runIt, "dt", "run", result.dt);
         parseMandatory(*runIt, "random_seed", "run", result.randomSeed);
-        parseOptional(*runIt, "spike_threshold", result.spikeThreshold, {-30});
+        parseOptional(*runIt,
+                      "spike_threshold",
+                      result.spikeThreshold,
+                      {Run::DEFAULT_spikeThreshold});
         parseOptional(*runIt,
                       "integration_method",
                       result.integrationMethod,
-                      {Run::IntegrationMethod::euler});
-        parseOptional(*runIt, "stimulus_seed", result.stimulusSeed, {0});
-        parseOptional(*runIt, "ionchannel_seed", result.ionchannelSeed, {0});
-        parseOptional(*runIt, "minis_seed", result.minisSeed, {0});
-        parseOptional(*runIt, "synapse_seed", result.synapseSeed, {0});
+                      {Run::DEFAULT_IntegrationMethod});
+        parseOptional(*runIt, "stimulus_seed", result.stimulusSeed, {Run::DEFAULT_stimulusSeed});
+        parseOptional(*runIt,
+                      "ionchannel_seed",
+                      result.ionchannelSeed,
+                      {Run::DEFAULT_ionchannelSeed});
+        parseOptional(*runIt, "minis_seed", result.minisSeed, {Run::DEFAULT_minisSeed});
+        parseOptional(*runIt, "synapse_seed", result.synapseSeed, {Run::DEFAULT_synapseSeed});
+        parseOptional(*runIt, "electrodes_file", result.electrodesFile, {""});
+
+        if (!result.electrodesFile.empty()) {
+            result.electrodesFile = toAbsolute(_basePath, result.electrodesFile);
+        }
+
         return result;
     }
 
@@ -982,13 +1093,13 @@ class SimulationConfig::Parser
         if (outputIt == _json.end()) {
             return result;
         }
-        parseOptional(*outputIt, "output_dir", result.outputDir, {"output"});
-        parseOptional(*outputIt, "log_file", result.logFile, {""});
-        parseOptional(*outputIt, "spikes_file", result.spikesFile, {"out.h5"});
+        parseOptional(*outputIt, "output_dir", result.outputDir, {Output::DEFAULT_outputDir});
+        parseOptional(*outputIt, "log_file", result.logFile, {Output::DEFAULT_logFile});
+        parseOptional(*outputIt, "spikes_file", result.spikesFile, {Output::DEFAULT_spikesFile});
         parseOptional(*outputIt,
                       "spikes_sort_order",
                       result.sortOrder,
-                      {Output::SpikesSortOrder::by_time});
+                      {Output::DEFAULT_sortOrder});
 
         result.outputDir = toAbsolute(_basePath, result.outputDir);
 
@@ -996,23 +1107,23 @@ class SimulationConfig::Parser
     }
 
     SimulationConfig::Conditions parseConditions() const {
-        SimulationConfig::Conditions result{};
+        SimulationConfig::Conditions result;
 
         const auto conditionsIt = _json.find("conditions");
         if (conditionsIt == _json.end()) {
             return result;
         }
-        parseOptional(*conditionsIt, "celsius", result.celsius, {34.0});
-        parseOptional(*conditionsIt, "v_init", result.vInit, {-80});
+        parseOptional(*conditionsIt, "celsius", result.celsius, {Conditions::DEFAULT_celsius});
+        parseOptional(*conditionsIt, "v_init", result.vInit, {Conditions::DEFAULT_vInit});
         parseOptional(*conditionsIt,
                       "spike_location",
                       result.spikeLocation,
-                      {Conditions::SpikeLocation::soma});
+                      {Conditions::DEFAULT_spikeLocation});
         parseOptional(*conditionsIt, "extracellular_calcium", result.extracellularCalcium);
         parseOptional(*conditionsIt,
                       "randomize_gaba_rise_time",
                       result.randomizeGabaRiseTime,
-                      {false});
+                      {Conditions::DEFAULT_randomizeGabaRiseTime});
         parseConditionsMechanisms(*conditionsIt, result.mechanisms);
         parseConditionsModifications(*conditionsIt, result.modifications);
         return result;
@@ -1074,7 +1185,7 @@ class SimulationConfig::Parser
     }
 
     SimulationConfig::SimulatorType parseTargetSimulator() const {
-        SimulationConfig::SimulatorType val;
+        SimulationConfig::SimulatorType val = SimulationConfig::SimulatorType::NEURON;
         parseOptional(_json, "target_simulator", val, {SimulationConfig::SimulatorType::NEURON});
         return val;
     }
@@ -1116,7 +1227,7 @@ class SimulationConfig::Parser
             const auto& valueIt = it.value();
             const auto debugStr = fmt::format("input {}", it.key());
 
-            InputBase::Module module;
+            InputBase::Module module = InputBase::Module::invalid;
             parseMandatory(valueIt, "module", debugStr, module);
 
             const auto input = parseInputModule(valueIt, module, _basePath, debugStr);
@@ -1137,6 +1248,7 @@ class SimulationConfig::Parser
                 if (!(nonstd::holds_alternative<SimulationConfig::InputLinear>(input) ||
                       nonstd::holds_alternative<SimulationConfig::InputRelativeLinear>(input) ||
                       nonstd::holds_alternative<SimulationConfig::InputPulse>(input) ||
+                      nonstd::holds_alternative<SimulationConfig::InputSinusoidal>(input) ||
                       nonstd::holds_alternative<SimulationConfig::InputSubthreshold>(input) ||
                       nonstd::holds_alternative<SimulationConfig::InputNoise>(input) ||
                       nonstd::holds_alternative<SimulationConfig::InputShotNoise>(input) ||
@@ -1293,6 +1405,11 @@ const SimulationConfig::Conditions& SimulationConfig::getConditions() const noex
     return _conditions;
 }
 
+const std::vector<SimulationConfig::Modification>& SimulationConfig::Conditions::getModifications()
+    const noexcept {
+    return modifications;
+}
+
 const std::string& SimulationConfig::getNetwork() const noexcept {
     return _network;
 }
@@ -1353,21 +1470,6 @@ const std::unordered_map<std::string, variantValueType>& SimulationConfig::getBe
 
 const std::string& SimulationConfig::getExpandedJSON() const {
     return _expandedJSON;
-}
-
-std::set<std::string> SimulationConfig::Conditions::listModificationNames() const {
-    return getMapKeys(modifications);
-}
-
-const SimulationConfig::Modification& SimulationConfig::Conditions::getModification(
-    const std::string& name) const {
-    const auto it = modifications.find(name);
-    if (it == modifications.end()) {
-        throw SonataError(
-            fmt::format("The modification '{}' is not present in the simulation config file",
-                        name));
-    }
-    return it->second;
 }
 
 }  // namespace sonata

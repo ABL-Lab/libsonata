@@ -5,7 +5,6 @@ import sys
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
-
 MIN_CPU_CORES = 2
 
 
@@ -66,6 +65,12 @@ class CMakeBuild(build_ext):
             '-DPython_EXECUTABLE=' + sys.executable
         ]
 
+        if "CC" in os.environ:
+            cmake_args.append('-DCMAKE_C_COMPILER='+os.environ["CC"])
+
+        if "CXX" in os.environ:
+            cmake_args.append('-DCMAKE_CXX_COMPILER='+os.environ["CXX"])                                    
+        
         if "STATIC_HDF5" in os.environ:
             cmake_args += ["-DHDF5_USE_STATIC_LIBRARIES=True", ]
 
